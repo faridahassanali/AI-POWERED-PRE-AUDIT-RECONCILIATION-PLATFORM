@@ -1,2 +1,12 @@
+# Core — needed from Step 1 (data loading, validation)
 pandas>=2.0
 jsonschema>=4.0
+
+# Testing — needed from Step 5 onward (comparing against expected_findings.csv)
+pytest>=7.0
+
+# RAG + LLM — only needed later (Step 7: policy retrieval + explanation generation)
+# Uncomment when you reach that stage:
+# chromadb>=0.4
+# sentence-transformers>=2.2
+# anthropic>=0.25
