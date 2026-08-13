@@ -1,193 +1,527 @@
-AI-POWERED PRE-AUDIT & RECONCILIATION PLATFORM
-Automated Self-Audit for Wallet Product Initialization
-Project Proposal — Final MVP Specification
-Business Case • Data Contract • Controls • Human Review • RAG • LLM • Evaluation
+# AI-Powered Pre-Audit & Reconciliation Platform
 
+## Automated Self-Audit for Wallet Product Initialization
+
+An AI-assisted pre-audit platform designed to identify potential audit findings **before the formal audit takes place**.
+
+The platform validates wallet initialization data using deterministic audit controls, preserves evidence for every potential finding, reconciles source data with the final report, routes findings through human review, retrieves the applicable policy through RAG, and uses an LLM to generate evidence-backed explanations and recommendations.
+
+> **Core idea:** Audit the process before the auditor audits it.
+
+---
 
 ## Table of Contents
 
-- [1. Executive Summary](#1-executive-summary)
-- [2. Business Scenario](#2-business-scenario)
-- [3. Objective](#3-objective)
-- [4. MVP Controls](#4-mvp-controls)
-- [5. Important Status Model](#5-important-status-model)
-- [6. SCREENING_001 — Customer Screening Validation](#6-screening001--customer-screening-validation)
-- [7. RISK_001 — Customer Risk Validation](#7-risk001--customer-risk-validation)
-- [8. ARABIC_NAME_001 — Arabic Name Presence Validation](#8-arabicname001--arabic-name-presence-validation)
-- [9. DORMANT_001 — Dormant Account Handling Validation](#9-dormant001--dormant-account-handling-validation)
-- [10. RECON_001 — Source-to-Report Reconciliation](#10-recon001--source-to-report-reconciliation)
-- [11. Synthetic Dataset v3](#11-synthetic-dataset-v3)
-- [12. Ground Truth Distribution](#12-ground-truth-distribution)
-- [13. Canonical Source Population](#13-canonical-source-population)
-- [14. Overall Architecture](#14-overall-architecture)
-- [15. Data Loader & Normalization](#15-data-loader--normalization)
-- [16. Canonical Customer Record](#16-canonical-customer-record)
-- [17. Finding Contract](#17-finding-contract)
-- [18. Human Review](#18-human-review)
-- [19. Policy Knowledge Base & RAG](#19-policy-knowledge-base--rag)
-- [20. AI Role](#20-ai-role)
-- [21. End-to-End Example](#21-end-to-end-example)
-- [22. Evaluation Strategy](#22-evaluation-strategy)
-- [23. Implementation Roadmap](#23-implementation-roadmap)
-- [24. Proposed Backend Structure](#24-proposed-backend-structure)
-- [25. MVP Definition of Done](#25-mvp-definition-of-done)
-- [26. Out of Scope](#26-out-of-scope)
-- [27. Final Project Statement](#27-final-project-statement)
-- [28. Synthetic Data Integrity Checklist](#28-synthetic-data-integrity-checklist)
-- [Tables and Structured Specifications](#tables-and-structured-specifications)
-## 1. Executive Summary
-When a bank launches a financial product such as a wallet, a partner company may submit a customer population for wallet initialization. Before activation, the bank performs screening, risk checks, customer-data validation, dormant-account handling, wallet initialization, and final reporting.
-The operational problem is not only whether each activity was performed. The bank also needs to know whether the resulting data is complete, consistent, supported by evidence, and accurately represented in the final report. A formal audit may discover an issue only after the wallet population has already been processed.
-The proposed platform acts as a controlled pre-audit layer. It runs deterministic audit controls over the source and processing data, creates traceable findings, sends findings through human review, retrieves the applicable policy through RAG, and uses an LLM to explain confirmed findings and produce evidence-backed recommendations.
-Core idea: Audit the process before the auditor audits it.
+- [1. Business Scenario](#1-business-scenario)
+- [2. Problem Statement](#2-problem-statement)
+- [3. Project Objective](#3-project-objective)
+- [4. What the System Does](#4-what-the-system-does)
+- [5. MVP Controls](#5-mvp-controls)
+- [6. Important Status Model](#6-important-status-model)
+- [7. Control Details](#7-control-details)
+- [8. Synthetic Dataset](#8-synthetic-dataset)
+- [9. Ground Truth](#9-ground-truth)
+- [10. Canonical Source Population](#10-canonical-source-population)
+- [11. Project Architecture](#11-project-architecture)
+- [12. Data Loading and Normalization](#12-data-loading-and-normalization)
+- [13. Finding Contract](#13-finding-contract)
+- [14. Human Review](#14-human-review)
+- [15. Policy Knowledge Base and RAG](#15-policy-knowledge-base-and-rag)
+- [16. AI / LLM Role](#16-ai--llm-role)
+- [17. End-to-End Example](#17-end-to-end-example)
+- [18. Evaluation Strategy](#18-evaluation-strategy)
+- [19. Project Structure](#19-project-structure)
+- [20. Setup](#20-setup)
+- [21. Implementation Roadmap](#21-implementation-roadmap)
+- [22. MVP Definition of Done](#22-mvp-definition-of-done)
+- [23. Out of Scope](#23-out-of-scope)
+- [24. Synthetic Data Integrity Checklist](#24-synthetic-data-integrity-checklist)
 
-## 2. Business Scenario
-Partner Company -> Customer Population -> Bank Processing -> Screening / Risk / Data / Dormancy -> Wallet Initialization -> Final Report -> Formal Audit
-A typical audit issue could be: a customer appears as High Risk but has an opened wallet, a customer has a non-clear screening result but the final report shows CLEAR, a required Arabic name is missing, a dormant account was activated without completed handling, or a customer/report record is missing or inconsistent.
+---
 
-## 3. Objective
-The platform is designed to identify potential audit findings before the formal audit, preserve the evidence that caused each finding, connect the finding to the relevant policy, and make confirmed findings understandable through AI.
-- Detect control violations deterministically.
-- Prevent the LLM from making the compliance decision.
-- Give a reviewer a clear evidence package for every potential finding.
+# 1. Business Scenario
+
+When a bank launches a financial product such as a wallet, a partner company may submit a population of customers for wallet initialization.
+
+The bank is responsible for processing those customers before activation. The process may include:
+
+1. Receiving the partner customer population.
+2. Validating customer data.
+3. Performing customer screening.
+4. Assessing customer risk.
+5. Checking the required Arabic customer name.
+6. Identifying dormant accounts and performing the required handling.
+7. Initializing the wallet.
+8. Producing a final report describing the processed population.
+
+The formal audit may later discover that something went wrong.
+
+For example:
+
+- A high-risk customer was opened.
+- A customer with an unsuccessful or incomplete screening result was treated as clear.
+- A customer does not have an Arabic-script name.
+- A dormant account was activated without the required handling.
+- The final report does not accurately represent the source or processing data.
+
+The purpose of this project is to identify such problems **before the formal audit**.
+
+---
+
+# 2. Problem Statement
+
+The problem is not only whether a process was performed.
+
+The bank also needs to verify that:
+
+- the required controls were actually satisfied;
+- the evidence exists;
+- the source and processing data are consistent;
+- the final report accurately represents the underlying data;
+- the finding can be traced back to the relevant policy;
+- a reviewer can understand and confirm or reject the potential finding.
+
+The platform therefore acts as a controlled **pre-audit layer** between operational processing and the formal audit.
+
+---
+
+# 3. Project Objective
+
+The platform aims to:
+
+- Detect potential audit findings automatically.
+- Use deterministic rules for compliance decisions.
+- Preserve evidence for every potential finding.
 - Reconcile the final report against an approved source population.
-- Use RAG to ground AI explanations in the applicable policy version.
-- Generate a readable pre-audit report from structured results.
+- Provide a human review stage.
+- Retrieve the relevant policy using RAG.
+- Use an LLM only for grounded explanations, recommendations, and summaries.
+- Produce a readable pre-audit report.
 
-## 4. MVP Controls
+### Design Principle
 
-## 5. Important Status Model
-The project deliberately separates the result of a control assessment from the lifecycle of the finding. This prevents terms such as FAILED and CONFIRMED from being treated as the same concept.
+The LLM should **not decide whether a control failed**.
+
+The deterministic audit engine establishes the finding.
+
+The human reviewer confirms or rejects it.
+
+The RAG + LLM layer then explains confirmed findings using the applicable policy.
+
+---
+
+# 4. What the System Does
+
+The high-level workflow is:
+
+```text
+Partner Data
+     +
+Customer Data
+     +
+Screening Data
+     +
+Wallet Processing Data
+     +
+Final Report
+     ↓
+Data Loader
+     ↓
+Normalization
+     ↓
+Approved Source Population
+     ↓
+Deterministic Audit Controls
+     ↓
+Potential Findings
+     ↓
+Human Review
+     ↓
+Confirmed Findings
+     ↓
+Policy Retrieval / RAG
+     ↓
+LLM
+     ↓
+Explanation + Recommendation
+     ↓
+Pre-Audit Report
+```
+
+---
+
+# 5. MVP Controls
+
+The MVP contains five deterministic controls.
+
+| Control ID | Control | Main Question | Severity | Policy |
+|---|---|---|---|---|
+| `SCREENING_001` | Customer Screening Validation | Was mandatory screening clear and evidenced before wallet activation? | Critical / High | `SCREENING-POLICY-001` |
+| `RISK_001` | Customer Risk Validation | Was a High Risk customer opened without an approved exception? | High | `RISK-POLICY-001` |
+| `ARABIC_NAME_001` | Arabic Name Presence Validation | Does the customer record contain Arabic-script name data? | Medium | `DATA-POLICY-001` |
+| `DORMANT_001` | Dormant Account Handling Validation | Was required dormant handling completed before activation? | High | `DORMANT-POLICY-001` |
+| `RECON_001` | Source-to-Report Reconciliation | Does the final report match the approved source and processing data? | High | `RECON-POLICY-001` |
+
+---
+
+# 6. Important Status Model
+
+The project separates the **result of a control assessment** from the **lifecycle of the finding**.
+
+```text
 assessment_status = PASS | FAIL | UNKNOWN
-finding_status    = REVIEW | CONFIRMED | REJECTED | RESOLVED
+
+finding_status =
+    REVIEW
+    CONFIRMED
+    REJECTED
+    RESOLVED
+```
 
 Example:
-Rule Engine -> assessment_status = FAIL
-             finding_status    = REVIEW
-Human Review -> CONFIRMED or REJECTED
-The synthetic policies define mandatory evidence for the current controls. Therefore, missing mandatory screening evidence is a FAIL under SCREENING_001. UNKNOWN remains available in the contract for future controls where evidence is genuinely unavailable and the policy does not establish a mandatory requirement.
 
-## 6. SCREENING_001 — Customer Screening Validation
-FAIL when wallet_status == OPENED AND (screening_status != CLEAR OR screening_evidence_present == FALSE)
-The synthetic screening policy explicitly states that HIGH_RISK, PENDING, NO_MATCH, and missing mandatory screening evidence must not be treated as clear.
-Evidence:
-- customer_id
-- screening_status
-- screening_evidence_present
-- screening_reference
-- wallet_status
-Severity:
-- CRITICAL when a HIGH_RISK customer is opened.
-- HIGH for other non-CLEAR or missing-mandatory-evidence cases.
+```text
+Rule Engine
+    ↓
+assessment_status = FAIL
+finding_status = REVIEW
+    ↓
+Human Review
+    ↓
+CONFIRMED
+```
 
-## 7. RISK_001 — Customer Risk Validation
-FAIL when risk_level == HIGH AND wallet_status == OPENED AND risk_exception_approved == FALSE
-An approved exception is a legitimate pass for this control only when the exception is recorded with an exception reference and reviewer. This prevents the rule from treating every High Risk customer as an automatic violation.
+---
 
-## 8. ARABIC_NAME_001 — Arabic Name Presence Validation
-FAIL when name_ar is empty OR name_ar contains no Arabic-script character
-This is intentionally a narrow MVP control. It validates the presence of Arabic-script characters; it does not claim to validate legal-name correctness, completeness, or transliteration equivalence.
+# 7. Control Details
 
-## 9. DORMANT_001 — Dormant Account Handling Validation
-FAIL when account_status == DORMANT AND wallet_status == OPENED AND dormant_handling_status != COMPLETED
-Here, account_status refers to the underlying bank account, while wallet_status refers to the newly initialized wallet. Therefore, DORMANT + OPENED is a meaningful combination: it means a wallet was activated for an underlying dormant account.
+## 7.1 SCREENING_001 — Customer Screening Validation
 
-## 10. RECON_001 — Source-to-Report Reconciliation
-This control checks whether the final report represents the approved source population and processing results accurately.
+### Rule
+
+```text
+FAIL when:
+
+wallet_status == OPENED
+AND
+(
+    screening_status != CLEAR
+    OR
+    screening_evidence_present == FALSE
+)
+```
+
+The synthetic screening policy states that `HIGH_RISK`, `PENDING`, `NO_MATCH`, and missing mandatory screening evidence must not be treated as clear.
+
+### Evidence
+
+- `customer_id`
+- `screening_status`
+- `screening_evidence_present`
+- `screening_reference`
+- `wallet_status`
+
+### Severity
+
+- `CRITICAL` when a `HIGH_RISK` customer is opened.
+- `HIGH` for other non-CLEAR or missing-mandatory-evidence cases.
+
+---
+
+## 7.2 RISK_001 — Customer Risk Validation
+
+### Rule
+
+```text
+FAIL when:
+
+risk_level == HIGH
+AND
+wallet_status == OPENED
+AND
+risk_exception_approved == FALSE
+```
+
+An approved exception is valid only when the exception is properly recorded.
+
+Relevant fields:
+
+```text
+risk_exception_approved
+risk_exception_reference
+risk_exception_reviewer
+```
+
+Therefore:
+
+```text
+HIGH + OPENED + exception=False
+→ FINDING
+
+HIGH + OPENED + exception=True
+→ PASS
+```
+
+---
+
+## 7.3 ARABIC_NAME_001 — Arabic Name Presence Validation
+
+### Rule
+
+```text
+FAIL when:
+
+name_ar is empty
+OR
+name_ar contains no Arabic-script character
+```
+
+This is intentionally a narrow MVP control.
+
+It validates the **presence of Arabic-script characters**.
+
+It does not claim to validate legal-name correctness, full-name completeness, transliteration equivalence, or identity matching between Arabic and English names.
+
+---
+
+## 7.4 DORMANT_001 — Dormant Account Handling Validation
+
+### Rule
+
+```text
+FAIL when:
+
+account_status == DORMANT
+AND
+wallet_status == OPENED
+AND
+dormant_handling_status != COMPLETED
+```
+
+Here:
+
+- `account_status` = status of the underlying bank account.
+- `wallet_status` = status of the newly initialized wallet.
+
+Therefore:
+
+```text
+DORMANT + OPENED + handling incomplete
+```
+
+is a meaningful potential finding.
+
+---
+
+## 7.5 RECON_001 — Source-to-Report Reconciliation
+
+This control verifies that the final report accurately represents the approved source population and processing results.
+
+```text
 Raw Partner Requests
-        v
+        ↓
 Deduplicate by customer_id
-        v
-Join with Customer Master
-        v
+        ↓
 Approved Source Population
-        v
+        ↓
+Join with Customer Master
+        ↓
 Enrich with Screening + Wallet Processing
-        v
+        ↓
 Compare with Final Audit Report
-Multiple field mismatches for one customer produce one RECON_001 finding. The finding evidence contains all mismatched fields.
+```
 
-## 11. Synthetic Dataset v3
-Real bank customer data is not available for the project, so the MVP uses synthetic development/test data. The data intentionally contains realistic clean records plus controlled exceptions that serve as the evaluation oracle.
+Relevant fields include:
 
-## 12. Ground Truth Distribution
-Total expected findings: 223. Severity distribution: 7 Critical, 205 High, 11 Medium.
+```text
+customer_id
+name_ar
+risk_level
+screening_status
+account_status
+wallet_status
+```
 
-## 13. Canonical Source Population
-The raw partner file contains three duplicate customer requests to test deduplication. It no longer contains partner-only IDs that would bypass the defined customer-master validation stage.
-approved_source_population =
-    distinct partner customer_id
-    WHERE requested_wallet = YES
-    AND customer_id exists in customers.csv
-This produces 1,000 canonical source customers. Duplicate raw partner rows remain visible in the raw input for data-quality testing but do not create duplicate reconciliation findings.
+Multiple mismatched fields for the same customer produce **one `RECON_001` finding**. The finding evidence contains all mismatched fields.
 
-## 14. Overall Architecture
-INPUT DATA
+---
+
+# 8. Synthetic Dataset
+
+Real bank customer data is not available for the project.
+
+Therefore, the MVP uses a controlled synthetic dataset containing realistic clean records and deliberate exceptions.
+
+The synthetic dataset is designed for:
+
+- development;
+- testing;
+- demonstration;
+- rule-engine evaluation;
+- RAG integration;
+- end-to-end testing.
+
+| File | Purpose |
+|---|---|
+| `customers.csv` | Customer master records |
+| `partner_wallet_requests.csv` | Raw partner requests, including deliberate duplicates |
+| `approved_source_population.csv` | Canonical source population used by the audit engine |
+| `screening_results.csv` | Screening results and evidence |
+| `wallet_initialization.csv` | Wallet initialization results |
+| `dormant_accounts_report.csv` | Dormant-account records and required handling |
+| `final_wallet_audit_report.csv` | Final report to be reconciled |
+| `expected_findings.csv` | Ground-truth findings |
+| `controls.json` | Machine-readable control contract |
+| `finding_schema.json` | Finding and review lifecycle contract |
+| `01_customer_screening_policy.md` | Screening policy |
+| `02_risk_management_policy.md` | Risk policy |
+| `03_arabic_name_data_policy.md` | Arabic-name policy |
+| `04_dormant_accounts_policy.md` | Dormant-account policy |
+| `05_product_initialization_policy.md` | Product initialization policy |
+| `06_source_to_report_reconciliation_policy.md` | Reconciliation policy |
+
+> The exact record counts and ground-truth distribution should be taken from the V3 dataset and treated as the test baseline. Do not manually change them while evaluating the engine.
+
+---
+
+# 9. Ground Truth
+
+`expected_findings.csv` is the reference set used to evaluate the deterministic audit engine.
+
+It represents the findings intentionally injected into the synthetic dataset.
+
+The evaluation process is:
+
+```text
+Synthetic V3 Dataset
+        ↓
+Audit Engine
+        ↓
+Generated Findings
+        ↓
+Compare with expected_findings.csv
+        ↓
+Precision / Recall / F1
+```
+
+The ground truth should be treated as an **evaluation oracle**, not as an input to the production rule engine.
+
+---
+
+# 10. Canonical Source Population
+
+The raw partner file may contain duplicate requests.
+
+The approved source population is the normalized population against which downstream processing and final reporting are evaluated.
+
+Conceptually:
+
+```text
+Raw Partner Requests
+        ↓
+Validation
+        ↓
+Deduplication by customer_id
+        ↓
+Approved Source Population
+```
+
+The canonical record is then enriched with:
+
+```text
+Customer Master
++
+Screening Result
++
+Wallet Initialization
++
+Account Status
+```
+
+This prevents the reconciliation control from comparing the final report against an ambiguous raw input.
+
+---
+
+# 11. Project Architecture
+
+```text
+                         INPUT DATA
                               │
                  ┌────────────┼────────────┐
                  │            │            │
              Partner      Customer      Processing
               Data         Master       Data / Report
-                 `--──────────┼────────────┘
-                              v
+                 └────────────┼────────────┘
+                              ↓
                     DATA LOADER + NORMALIZER
-                              v
+                              ↓
                     APPROVED SOURCE POPULATION
-                              v
+                              ↓
                        AUDIT CONTROL ENGINE
                               │
           ┌───────────────────┼───────────────────┐
-          v                   v                   v
+          ↓                   ↓                   ↓
      Screening              Risk              Arabic Name
-          v                   v                   v
-       Dormant         Reconciliation      [other controls]
-          `--─────────────────┬───────────────────┘
-                              v
-                           FINDINGS
-                              v
-                        HUMAN REVIEW
+          ↓                   ↓                   ↓
+       Dormant         Reconciliation        Other Controls
+          └───────────────────┬───────────────────┘
+                              ↓
+                         POTENTIAL FINDINGS
+                              ↓
+                         HUMAN REVIEW
                     ┌─────────┴─────────┐
-                    v                   v
+                    ↓                   ↓
                 CONFIRMED            REJECTED
                     │
-                    v
+                    ↓
               POLICY KNOWLEDGE BASE
-                    v
+                    ↓
                    RAG
-                    v
+                    ↓
                    LLM
-                    v
+                    ↓
           Explanation / Recommendation
-                    v
-               AUDIT REPORT
+                    ↓
+               PRE-AUDIT REPORT
+```
 
-## 15. Data Loader & Normalization
-The first implementation step is not RAG. It is a stable data contract.
-- Load all CSV files with explicit schemas.
-- Validate required columns and basic types.
-- Normalize status strings, Boolean values, dates and missing values.
-- Normalize identifiers without changing their business meaning.
-- Deduplicate partner requests by customer_id for the approved population.
-- Join source and processing data into a canonical record for controls.
+---
 
-## 16. Canonical Customer Record
-{
-  "customer_id": "CUST100001",
-  "name_ar": "ياسمين عمر",
-  "name_en": "Yasmine Omar",
-  "risk_level": "LOW",
-  "screening_status": "CLEAR",
-  "screening_evidence_present": true,
-  "screening_reference": "SCR-CUST100001",
-  "account_status": "ACTIVE",
-  "wallet_status": "OPENED",
-  "risk_exception_approved": false,
-  "risk_exception_reference": null,
-  "risk_exception_reviewer": null,
-  "dormant_handling_status": "NOT_REQUIRED"
-}
+# 12. Data Loading and Normalization
 
-## 17. Finding Contract
+The first implementation stage is the data foundation.
+
+Before implementing RAG or the LLM, the project must be able to load and normalize the V3 dataset reliably.
+
+Responsibilities:
+
+1. Load all required CSV files.
+2. Validate required columns.
+3. Validate basic data types.
+4. Normalize status values.
+5. Normalize Boolean values.
+6. Normalize dates.
+7. Normalize missing values.
+8. Normalize identifiers without changing their business meaning.
+9. Deduplicate partner requests.
+10. Generate the approved source population.
+11. Produce canonical records for the audit controls.
+
+First implementation:
+
+```text
+engine/load_data.py
+```
+
+followed by normalization.
+
+---
+
+# 13. Finding Contract
+
+Example:
+
+```json
 {
   "finding_id": "F-0001",
   "audit_run_id": "RUN-2026-08-13-001",
@@ -198,9 +532,13 @@ The first implementation step is not RAG. It is a stable data contract.
   "finding_status": "REVIEW",
   "expected": "...",
   "actual": "...",
-  "evidence": {...},
+  "evidence": {},
   "policy_references": [
-    {"policy_id": "RISK-POLICY-001", "version": "1.0", "section": "Requirements"}
+    {
+      "policy_id": "RISK-POLICY-001",
+      "version": "1.0",
+      "section": "Requirements"
+    }
   ],
   "reviewed_by": null,
   "review_timestamp": null,
@@ -208,187 +546,555 @@ The first implementation step is not RAG. It is a stable data contract.
   "ai_explanation": null,
   "ai_recommendation": null
 }
+```
 
-## 18. Human Review
-The rule engine produces potential findings. A human reviewer is the control gate before AI narrative generation.
+The AI fields are initially empty.
+
+---
+
+# 14. Human Review
+
+The rule engine produces potential findings.
+
+A human reviewer is the control gate before AI explanation.
+
+```text
 Rule Engine
-   v
+    ↓
 assessment_status = FAIL
 finding_status = REVIEW
-   v
+    ↓
 Reviewer examines evidence
-   |-- CONFIRMED
-   `-- REJECTED
-          v
-     confirmed findings
-          v
+    ├── CONFIRMED
+    └── REJECTED
+          ↓
+     Confirmed findings
+          ↓
          RAG
-          v
+          ↓
          LLM
-This design prevents the LLM from deciding whether a customer is compliant and creates a clear audit trail for who reviewed the finding and when.
+```
 
-## 19. Policy Knowledge Base & RAG
-Six synthetic policies -> text extraction -> chunking -> embeddings -> vector store -> retrieval
-The RAG layer is policy-aware. A confirmed finding retrieves the relevant policy ID, version and section. The retrieved text becomes context for the LLM.
-Policy references are stored with version information so that an audit finding remains traceable to the policy version used at the time.
+The reviewer should see:
 
-## 20. AI Role
-The AI layer is intentionally constrained: it explains and summarizes facts that have already been established by deterministic controls and human review.
+- customer;
+- control;
+- severity;
+- expected value;
+- actual value;
+- evidence;
+- policy reference.
 
-## 21. End-to-End Example
+---
+
+# 15. Policy Knowledge Base and RAG
+
+The project contains synthetic policy documents covering the five audit areas and the supporting product-initialization process.
+
+Pipeline:
+
+```text
+Policy Documents
+        ↓
+Text Extraction
+        ↓
+Chunking
+        ↓
+Embeddings
+        ↓
+Vector Store
+        ↓
+Retriever
+        ↓
+Relevant Policy / Section
+```
+
+The RAG layer retrieves:
+
+```text
+Policy ID
+Policy Version
+Policy Section
+Policy Text
+```
+
+The policy reference is stored with the finding.
+
+---
+
+# 16. AI / LLM Role
+
+AI is included, but its role is intentionally constrained.
+
+| Task | Responsible Layer |
+|---|---|
+| Decide whether a control failed | Deterministic Rule Engine |
+| Calculate finding severity | Deterministic Rule Engine |
+| Confirm / reject a finding | Human Reviewer |
+| Retrieve applicable policy | RAG |
+| Explain a confirmed finding | LLM |
+| Generate recommendation | LLM |
+| Calculate statistics | Deterministic code |
+| Write executive summary | LLM using calculated statistics |
+| Autonomous remediation | Not allowed |
+
+The LLM must not invent customers, evidence, control failures, severity, policy requirements, or statistics.
+
+---
+
+# 17. End-to-End Example
+
+Suppose:
+
+```text
 Customer: CUST100002
 Risk: HIGH
 Wallet: OPENED
 Approved Exception: FALSE
+```
 
-        v
+The rule engine evaluates `RISK_001`:
 
-RISK_001
-Assessment: FAIL
-Finding: REVIEW
+```text
+assessment_status = FAIL
+finding_status = REVIEW
+severity = HIGH
+```
 
-        v
+The reviewer examines the evidence.
 
-Human Review
-        v
+If confirmed:
+
+```text
+finding_status = CONFIRMED
+```
+
+Then:
+
+```text
+Confirmed Finding
+       ↓
+RAG
+       ↓
+RISK-POLICY-001
+       ↓
+Relevant Policy Section
+       ↓
+LLM
+```
+
+The LLM generates an explanation and recommendation based on the confirmed finding, evidence, and retrieved policy.
+
+---
+
+# 18. Evaluation Strategy
+
+## 18.1 Deterministic Rule Engine
+
+Compare generated findings with:
+
+```text
+expected_findings.csv
+```
+
+Track:
+
+- Precision
+- Recall
+- F1
+- False Positives
+- False Negatives
+- Findings per control
+- Findings by severity
+
+### Precision
+
+```text
+Correct Generated Findings
+--------------------------
+All Generated Findings
+```
+
+### Recall
+
+```text
+Correct Generated Findings
+--------------------------
+All Expected Findings
+```
+
+### F1
+
+```text
+2 × Precision × Recall
+----------------------
+Precision + Recall
+```
+
+## 18.2 Finding Identity
+
+For evaluation, a finding should be matched using a stable identity such as:
+
+```text
+control_id + customer_id
+```
+
+For controls where a finding is not customer-specific, use the appropriate control-level key.
+
+Evidence differences should be evaluated separately from finding identity.
+
+## 18.3 RAG Evaluation
+
+Check:
+
+- correct policy;
+- correct policy version;
+- correct section;
+- whether the retrieved context supports the finding.
+
+## 18.4 LLM Evaluation
+
+Check:
+
+- grounding;
+- factual consistency;
+- relevance;
+- completeness;
+- recommendation quality;
+- absence of unsupported claims.
+
+---
+
+# 19. Project Structure
+
+```text
+wallet_audit_project/
+│
+├── data/
+│   ├── customers.csv
+│   ├── partner_wallet_requests.csv
+│   ├── approved_source_population.csv
+│   ├── screening_results.csv
+│   ├── wallet_initialization.csv
+│   ├── dormant_accounts_report.csv
+│   ├── final_wallet_audit_report.csv
+│   ├── expected_findings.csv
+│   ├── controls.json
+│   ├── finding_schema.json
+│   └── *.md
+│
+├── engine/
+│   ├── load_data.py
+│   ├── normalizer.py
+│   ├── audit_engine.py
+│   └── controls/
+│       ├── screening.py
+│       ├── risk.py
+│       ├── arabic_name.py
+│       ├── dormant.py
+│       └── reconciliation.py
+│
+├── rag/
+│   ├── ingestion.py
+│   ├── embeddings.py
+│   └── retriever.py
+│
+├── ai/
+│   └── report_generator.py
+│
+├── tests/
+│   ├── test_loader.py
+│   ├── test_screening.py
+│   ├── test_risk.py
+│   ├── test_arabic_name.py
+│   ├── test_dormant.py
+│   └── test_reconciliation.py
+│
+├── requirements.txt
+├── SETUP.md
+└── README.md
+```
+
+---
+
+# 20. Setup
+
+## Prerequisites
+
+Recommended:
+
+```text
+Python 3.10+
+```
+
+## Step 1 — Open the Project
+
+Extract the project and open a terminal inside:
+
+```text
+wallet_audit_project/
+```
+
+You should see:
+
+```text
+wallet_audit_project/
+├── data/
+├── engine/
+├── tests/
+├── requirements.txt
+├── SETUP.md
+└── README.md
+```
+
+## Step 2 — Create and Activate a Virtual Environment
+
+### Windows
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+### macOS / Linux
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+## Step 3 — Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+The initial dependencies include:
+
+```text
+pandas
+jsonschema
+```
+
+Verify:
+
+```bash
+python -c "import pandas; import jsonschema; print('ready')"
+```
+
+Expected:
+
+```text
+ready
+```
+
+## Step 4 — Add the V3 Synthetic Dataset
+
+Copy **all V3 files** into:
+
+```text
+data/
+```
+
+Expected structure:
+
+```text
+data/
+├── customers.csv
+├── partner_wallet_requests.csv
+├── approved_source_population.csv
+├── screening_results.csv
+├── wallet_initialization.csv
+├── dormant_accounts_report.csv
+├── final_wallet_audit_report.csv
+├── expected_findings.csv
+├── controls.json
+├── finding_schema.json
+├── 01_customer_screening_policy.md
+├── 02_risk_management_policy.md
+├── 03_arabic_name_data_policy.md
+├── 04_dormant_accounts_policy.md
+├── 05_product_initialization_policy.md
+└── 06_source_to_report_reconciliation_policy.md
+```
+
+> Do not manually modify the V3 dataset while evaluating the engine. It is also the ground truth for testing.
+
+---
+
+# 21. Implementation Roadmap
+
+## Phase 1 — Data Foundation
+
+```text
+Data Loader
+    ↓
+Schema Validation
+    ↓
+Normalization
+    ↓
+Approved Source Population
+```
+
+First implementation:
+
+```text
+engine/load_data.py
+```
+
+## Phase 2 — Deterministic Controls
+
+Implement:
+
+```text
+1. SCREENING_001
+2. RISK_001
+3. ARABIC_NAME_001
+4. DORMANT_001
+5. RECON_001
+```
+
+Start with:
+
+```text
+SCREENING_001
+```
+
+## Phase 3 — Ground Truth Evaluation
+
+Compare:
+
+```text
+Generated Findings
+        vs
+expected_findings.csv
+```
+
+## Phase 4 — Human Review
+
+Implement:
+
+```text
+REVIEW
 CONFIRMED
+REJECTED
+RESOLVED
+```
 
-        v
+with reviewer metadata.
 
-RAG retrieves RISK-POLICY-001 v1.0
+## Phase 5 — RAG
 
-        v
+```text
+Policy ingestion
+    ↓
+Chunking
+    ↓
+Embeddings
+    ↓
+Vector Store
+    ↓
+Retrieval
+```
 
-LLM:
-Explains the confirmed violation using the evidence
-and policy, then recommends the appropriate review/
-remediation action.
-The LLM does not create RISK_001 and does not change its severity. It receives the structured finding and policy context.
+## Phase 6 — LLM
 
-## 22. Evaluation Strategy
-The deterministic audit engine is evaluated against expected_findings.csv. The dataset is intentionally constructed so that each control has known exceptions.
-- Precision = correct generated findings / all generated findings.
-- Recall = correct generated findings / all expected findings.
-- F1 = harmonic mean of precision and recall.
-- False Positives = generated findings not present in ground truth.
-- False Negatives = expected findings not generated by the engine.
-For RAG, evaluation should check whether the retrieved policy is the correct policy/version and whether the relevant section is present. For the LLM, evaluation should focus on grounding, factual consistency, relevance, and recommendation quality.
+Use the LLM for:
 
-## 23. Implementation Roadmap
-Phase 1 — Data foundation: Data Loader -> Schema validation -> Normalization -> Approved Source Population
-Phase 2 — Deterministic controls: SCREENING_001 -> RISK_001 -> ARABIC_NAME_001 -> DORMANT_001 -> RECON_001
-Phase 3 — Ground-truth evaluation: Compare generated findings with 223 expected findings; calculate precision/recall/F1
-Phase 4 — Human Review: Review queue -> Confirm / Reject -> reviewer metadata and audit trail
-Phase 5 — RAG: Ingest six policies -> chunk -> embed -> retrieve by control/policy
-Phase 6 — LLM: Generate grounded explanations, recommendations and summaries for confirmed findings
-Phase 7 — Reporting: Dashboard/API -> findings -> evidence -> policy references -> pre-audit report
+- confirmed-finding explanations;
+- policy-grounded recommendations;
+- executive summaries;
+- report wording.
 
-## 24. Proposed Backend Structure
-backend/
-|-- app/
-│   |-- main.py
-│   |-- data/
-│   │   |-- loader.py
-│   │   |-- schemas.py
-│   │   `-- normalizer.py
-│   |-- audit/
-│   │   |-- engine.py
-│   │   `-- controls/
-│   │       |-- screening.py
-│   │       |-- risk.py
-│   │       |-- arabic_name.py
-│   │       |-- dormant.py
-│   │       `-- reconciliation.py
-│   |-- review/
-│   │   `-- findings.py
-│   |-- rag/
-│   │   |-- ingestion.py
-│   │   |-- retriever.py
-│   │   `-- embeddings.py
-│   |-- ai/
-│   │   `-- report_generator.py
-│   `-- models/
-│       `-- finding.py
-|-- data/
-|-- policies/
-`-- tests/
+## Phase 7 — Reporting
 
-## 25. MVP Definition of Done
-- All seven input/data artifacts can be loaded and normalized.
-- The approved source population is generated deterministically.
-- All five controls run without relying on an LLM.
-- The engine can reproduce the 223 ground-truth findings.
-- Each finding contains evidence and policy references.
-- A human can confirm or reject a finding.
-- RAG retrieves the correct policy/version for a confirmed finding.
-- The LLM produces a grounded explanation and recommendation.
-- A final pre-audit report can summarize findings, severity, evidence and policy references.
+Produce a pre-audit report containing:
 
-## 26. Out of Scope
-- Replacing the formal audit function.
-- Autonomous compliance decisions by an LLM.
-- AI-based risk scoring.
-- AI root-cause analysis.
-- AI-based finding classification when the failed control already identifies the category.
-- Autonomous remediation.
-- Continuous monitoring as an MVP requirement.
-- Use of real customer PII.
+- Audit summary
+- Overall risk
+- Findings
+- Severity
+- Evidence
+- Policy references
+- Recommendations
+- Review status
+- Control statistics
 
-## 27. Final Project Statement
-An AI-assisted pre-audit platform that automatically checks wallet initialization data against deterministic compliance controls, reconciles the approved source population with the final report, routes potential findings through human review, retrieves the applicable policy through RAG, and uses an LLM to turn confirmed findings into evidence-backed explanations and recommendations.
+---
 
-## 28. Synthetic Data Integrity Checklist
-- 1,000 customer master records.
-- 1,003 raw partner requests with exactly 1,000 unique customers and 3 deliberate duplicate requests.
-- 1,000 approved source-population records after deduplication and customer-master validation.
-- 1,000 screening records.
-- 1,000 wallet initialization records.
-- 78 dormant accounts.
-- 996 final-report records.
-- 223 ground-truth findings.
-- No partner-only IDs remain in the raw partner input.
-- Approved High Risk exceptions are represented with reference/reviewer and are not treated as RISK_001 findings.
-- Dormant findings require incomplete handling, while completed dormant handling passes.
-- Reconciliation produces exactly 16 customer-level findings under the canonical source definition.
+# 22. MVP Definition of Done
 
-## Tables and Structured Specifications
+- [ ] All V3 input files can be loaded.
+- [ ] Required schemas are validated.
+- [ ] Data normalization works.
+- [ ] The approved source population is generated deterministically.
+- [ ] All five controls run without an LLM.
+- [ ] Findings contain evidence.
+- [ ] Findings contain policy references.
+- [ ] The engine can be evaluated against the V3 ground-truth findings.
+- [ ] Human reviewers can confirm or reject findings.
+- [ ] RAG retrieves the relevant policy/version.
+- [ ] The LLM generates a grounded explanation.
+- [ ] The LLM generates an evidence-backed recommendation.
+- [ ] A final pre-audit report can be generated.
 
-| Control ID | Control | Main Question | Severity | Policy |
-| --- | --- | --- | --- | --- |
-| SCREENING_001 | Customer Screening Validation | Was mandatory screening clear and evidenced before wallet activation? | CRITICAL / HIGH | SCREENING-POLICY-001 |
-| RISK_001 | Customer Risk Validation | Was a High Risk customer opened without an approved exception? | HIGH | RISK-POLICY-001 |
-| ARABIC_NAME_001 | Arabic Name Presence Validation | Does the customer record contain Arabic-script name data? | MEDIUM | DATA-POLICY-001 |
-| DORMANT_001 | Dormant Account Handling Validation | Was required dormant handling completed before activation? | HIGH | DORMANT-POLICY-001 |
-| RECON_001 | Source-to-Report Reconciliation | Does the final report match the approved source and processing data? | HIGH | RECON-POLICY-001 |
+---
 
-| File | Purpose / Size |
-| --- | --- |
-| customers.csv | 1,000 customer master records; risk, screening, account, wallet, exception and dormant fields. |
-| partner_wallet_requests.csv | 1,003 raw partner rows: 1,000 unique customers + 3 duplicate requests. |
-| approved_source_population.csv | 1,000 canonical customers after partner/customer validation and deduplication. |
-| screening_results.csv | 1,000 screening records with status, date, reference and evidence flag. |
-| wallet_initialization.csv | 1,000 wallet initialization records with status, exceptions and batch metadata. |
-| dormant_accounts_report.csv | 78 dormant-account records. |
-| final_wallet_audit_report.csv | 996 report records, intentionally containing controlled reconciliation exceptions. |
-| expected_findings.csv | 223 ground-truth control findings. |
-| controls.json | Machine-readable control contract. |
-| finding_schema.json | Machine-readable finding and review lifecycle contract. |
-| Six policy .md files | Synthetic policy knowledge base used by RAG. |
+# 23. Out of Scope
 
-| Control | Expected Findings | Primary Severity |
-| --- | --- | --- |
-| SCREENING_001 | 127 | 7 Critical, 120 High |
-| RISK_001 | 8 | High |
-| ARABIC_NAME_001 | 11 | Medium |
-| DORMANT_001 | 61 | High |
-| RECON_001 | 16 | High |
+The MVP does not aim to:
 
-| Task | Deterministic / Human | AI |
-| --- | --- | --- |
-| Decide whether a control failed | Rule Engine | No |
-| Confirm/reject a potential finding | Human Reviewer | No |
-| Retrieve relevant policy | — | RAG |
-| Explain a confirmed finding | — | LLM |
-| Generate evidence-backed recommendation | — | LLM |
-| Generate executive summary from calculated statistics | Rule Engine calculates; human can review | LLM writes |
-| Autonomously remediate | No | No |
+- Replace the formal audit function.
+- Make autonomous compliance decisions through an LLM.
+- Make AI-based risk decisions.
+- Perform AI root-cause analysis.
+- Use an LLM to decide finding classification when the failed control already identifies the category.
+- Perform autonomous remediation.
+- Require continuous monitoring.
+- Use real customer PII.
+
+---
+
+# 24. Synthetic Data Integrity Checklist
+
+The V3 baseline should be kept internally consistent and version-controlled.
+
+Before starting implementation, verify:
+
+- [ ] Customer IDs are consistent across source files.
+- [ ] Partner duplicates are intentional and documented.
+- [ ] The approved source population is reproducible.
+- [ ] Screening records map to the expected customers.
+- [ ] Wallet records map to the expected customers.
+- [ ] Dormant records use the agreed account-status values.
+- [ ] Risk exceptions are explicitly represented where applicable.
+- [ ] Dormant handling status is explicitly represented where applicable.
+- [ ] Final-report records use the same canonical identifiers.
+- [ ] Reconciliation differences are intentional.
+- [ ] `expected_findings.csv` matches the intended injected exceptions.
+- [ ] Policy IDs and versions match the control contract.
+- [ ] No real customer PII is present.
+
+---
+
+# Final Project Statement
+
+> **An AI-assisted pre-audit platform that automatically checks wallet initialization data against deterministic compliance controls, reconciles the approved source population with the final report, routes potential findings through human review, retrieves the applicable policy through RAG, and uses an LLM to turn confirmed findings into evidence-backed explanations and recommendations.**
+
+The implementation starts with:
+
+```text
+V3 Synthetic Data
+       ↓
+load_data()
+       ↓
+Normalization
+       ↓
+SCREENING_001
+       ↓
+Generated Findings
+       ↓
+expected_findings.csv
+```
+
+Only after the deterministic foundation is working reliably do we add the RAG and LLM layers.
