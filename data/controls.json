@@ -1,0 +1,202 @@
+[
+  {
+    "control_id": "SCREENING_001",
+    "name": "Customer Screening Validation",
+    "assessment_states": [
+      "PASS",
+      "FAIL",
+      "UNKNOWN"
+    ],
+    "input_fields": [
+      "customer_id",
+      "screening_status",
+      "screening_evidence_present",
+      "screening_reference",
+      "wallet_status"
+    ],
+    "validation_logic": "FAIL when wallet_status == OPENED and (screening_status != CLEAR or screening_evidence_present == false). If required screening evidence is unavailable and the policy does not establish a mandatory evidence requirement, use UNKNOWN; under the current synthetic policy, missing mandatory evidence is a FAIL.",
+    "severity_rules": [
+      {
+        "condition": "HIGH_RISK + OPENED",
+        "severity": "CRITICAL"
+      },
+      {
+        "condition": "non-CLEAR + OPENED",
+        "severity": "HIGH"
+      },
+      {
+        "condition": "missing mandatory evidence + OPENED",
+        "severity": "HIGH"
+      }
+    ],
+    "evidence_fields": [
+      "customer_id",
+      "screening_status",
+      "screening_evidence_present",
+      "screening_reference",
+      "wallet_status"
+    ],
+    "policy_references": [
+      {
+        "policy_id": "SCREENING-POLICY-001",
+        "version": "1.0",
+        "section": "Requirements"
+      }
+    ]
+  },
+  {
+    "control_id": "RISK_001",
+    "name": "Customer Risk Validation",
+    "assessment_states": [
+      "PASS",
+      "FAIL",
+      "UNKNOWN"
+    ],
+    "input_fields": [
+      "customer_id",
+      "risk_level",
+      "risk_exception_approved",
+      "risk_exception_reference",
+      "risk_exception_reviewer",
+      "wallet_status"
+    ],
+    "validation_logic": "FAIL when risk_level == HIGH and wallet_status == OPENED and risk_exception_approved == false. An approved exception with a reference and reviewer is a PASS for this control.",
+    "severity_rules": [
+      {
+        "condition": "HIGH + OPENED + no approved exception",
+        "severity": "HIGH"
+      }
+    ],
+    "evidence_fields": [
+      "customer_id",
+      "risk_level",
+      "risk_exception_approved",
+      "risk_exception_reference",
+      "risk_exception_reviewer",
+      "wallet_status"
+    ],
+    "policy_references": [
+      {
+        "policy_id": "RISK-POLICY-001",
+        "version": "1.0",
+        "section": "Requirements"
+      }
+    ]
+  },
+  {
+    "control_id": "ARABIC_NAME_001",
+    "name": "Arabic Name Presence Validation",
+    "assessment_states": [
+      "PASS",
+      "FAIL",
+      "UNKNOWN"
+    ],
+    "input_fields": [
+      "customer_id",
+      "name_ar"
+    ],
+    "validation_logic": "FAIL when name_ar is empty or contains no Arabic-script character. This MVP checks script presence only; it does not validate legal-name correctness or transliteration accuracy.",
+    "severity_rules": [
+      {
+        "condition": "missing_or_no_Arabic_script",
+        "severity": "MEDIUM"
+      }
+    ],
+    "evidence_fields": [
+      "customer_id",
+      "name_ar"
+    ],
+    "policy_references": [
+      {
+        "policy_id": "DATA-POLICY-001",
+        "version": "1.0",
+        "section": "Requirements"
+      }
+    ]
+  },
+  {
+    "control_id": "DORMANT_001",
+    "name": "Dormant Account Handling Validation",
+    "assessment_states": [
+      "PASS",
+      "FAIL",
+      "UNKNOWN"
+    ],
+    "input_fields": [
+      "customer_id",
+      "account_status",
+      "last_transaction_date",
+      "dormant_handling_status",
+      "wallet_status"
+    ],
+    "validation_logic": "FAIL when account_status == DORMANT and wallet_status == OPENED and dormant_handling_status != COMPLETED.",
+    "severity_rules": [
+      {
+        "condition": "DORMANT + OPENED + handling not COMPLETED",
+        "severity": "HIGH"
+      }
+    ],
+    "evidence_fields": [
+      "customer_id",
+      "account_status",
+      "last_transaction_date",
+      "dormant_handling_status",
+      "wallet_status"
+    ],
+    "policy_references": [
+      {
+        "policy_id": "DORMANT-POLICY-001",
+        "version": "1.0",
+        "section": "Requirements"
+      }
+    ]
+  },
+  {
+    "control_id": "RECON_001",
+    "name": "Source-to-Report Reconciliation",
+    "assessment_states": [
+      "PASS",
+      "FAIL",
+      "UNKNOWN"
+    ],
+    "source_definition": "approved_source_population.csv; canonical population = distinct partner requests with requested_wallet=YES that also exist in customer master; duplicate partner rows are deduplicated by customer_id before reconciliation. Processing fields are joined from screening and wallet initialization.",
+    "source_components": [
+      "partner_wallet_requests.csv",
+      "customers.csv",
+      "screening_results.csv",
+      "wallet_initialization.csv"
+    ],
+    "target": "final_wallet_audit_report.csv",
+    "key_fields": [
+      "customer_id",
+      "name_ar",
+      "risk_level",
+      "screening_status",
+      "account_status",
+      "wallet_status",
+      "risk_exception_approved",
+      "risk_exception_reference",
+      "dormant_handling_status"
+    ],
+    "validation_logic": "FAIL when an approved-source customer is missing from the final report, an unexpected report customer exists, or any key field differs. Multiple mismatches for the same customer produce one RECON_001 finding with all mismatched fields in evidence.",
+    "severity_rules": [
+      {
+        "condition": "any_reconciliation_mismatch",
+        "severity": "HIGH"
+      }
+    ],
+    "evidence_fields": [
+      "customer_id",
+      "source_values",
+      "report_values",
+      "mismatched_fields"
+    ],
+    "policy_references": [
+      {
+        "policy_id": "RECON-POLICY-001",
+        "version": "1.0",
+        "section": "Requirements"
+      }
+    ]
+  }
+]

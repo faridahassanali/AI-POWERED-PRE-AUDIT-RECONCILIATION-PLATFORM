@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuditFinding",
+  "type": "object",
+  "required": [
+    "finding_id",
+    "audit_run_id",
+    "control_id",
+    "customer_id",
+    "severity",
+    "assessment_status",
+    "finding_status",
+    "expected",
+    "actual",
+    "evidence",
+    "policy_references"
+  ],
+  "properties": {
+    "finding_id": {
+      "type": "string"
+    },
+    "audit_run_id": {
+      "type": "string"
+    },
+    "control_id": {
+      "type": "string"
+    },
+    "customer_id": {
+      "type": "string"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+      ]
+    },
+    "assessment_status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNKNOWN"
+      ]
+    },
+    "finding_status": {
+      "type": "string",
+      "enum": [
+        "REVIEW",
+        "CONFIRMED",
+        "REJECTED",
+        "RESOLVED"
+      ]
+    },
+    "expected": {
+      "type": "string"
+    },
+    "actual": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "policy_references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "policy_id",
+          "version"
+        ],
+        "properties": {
+          "policy_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "reviewed_by": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "review_timestamp": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reviewer_notes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ai_explanation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ai_recommendation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}
