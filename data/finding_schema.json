@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AuditFinding",
+  "title": "Audit Finding",
   "type": "object",
+
   "required": [
     "finding_id",
     "audit_run_id",
@@ -15,36 +16,43 @@
     "evidence",
     "policy_references"
   ],
+
   "properties": {
     "finding_id": {
       "type": "string"
     },
+
     "audit_run_id": {
       "type": "string"
     },
+
     "control_id": {
       "type": "string"
     },
+
     "customer_id": {
-      "type": "string"
+      "type": ["string", "null"]
     },
+
     "severity": {
       "type": "string",
       "enum": [
-        "CRITICAL",
-        "HIGH",
+        "LOW",
         "MEDIUM",
-        "LOW"
+        "HIGH",
+        "CRITICAL"
       ]
     },
+
     "assessment_status": {
       "type": "string",
       "enum": [
         "PASS",
         "FAIL",
-        "UNKNOWN"
+        "NOT_APPLICABLE"
       ]
     },
+
     "finding_status": {
       "type": "string",
       "enum": [
@@ -54,67 +62,64 @@
         "RESOLVED"
       ]
     },
+
     "expected": {
       "type": "string"
     },
+
     "actual": {
       "type": "string"
     },
+
     "evidence": {
-      "type": "object"
+      "type": "object",
+      "additionalProperties": true
     },
+
     "policy_references": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "policy_id",
-          "version"
-        ],
-        "properties": {
-          "policy_id": {
-            "type": "string"
-          },
-          "version": {
-            "type": "string"
-          },
-          "section": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "policy_id": {
+        "type": "string"
+      },
+      "version": {
+        "type": ["string", "null"]
+      },
+      "section": {
+        "type": ["string", "null"]
       }
     },
+    "required": [
+      "policy_id",
+      "version",
+      "section"
+    ]
+  }
+},
+
     "reviewed_by": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
+
     "review_timestamp": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
+
     "reviewer_notes": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
+
     "ai_explanation": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
+
     "ai_recommendation": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     }
   },
+
   "additionalProperties": false
 }
