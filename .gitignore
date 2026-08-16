@@ -9,13 +9,13 @@ __pycache__/
 # Testing
 .pytest_cache/
 
-# Environment variables
-.env
-.env.*
-
 # IDE
 .vscode/
 .idea/
+
+# Environment variables
+.env
+.env.*
 
 # OS
 .DS_Store
