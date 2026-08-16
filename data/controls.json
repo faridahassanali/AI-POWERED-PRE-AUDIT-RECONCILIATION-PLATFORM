@@ -17,6 +17,7 @@
     "validation_logic": "FAIL when wallet_status == OPENED and (screening_status != CLEAR or screening_evidence_present == false). If required screening evidence is unavailable and the policy does not establish a mandatory evidence requirement, use UNKNOWN; under the current synthetic policy, missing mandatory evidence is a FAIL.",
     "unknown_conditions": [
       "Required screening information is unavailable and the policy does not establish a mandatory evidence requirement."
+
     ],
     "expected": "Customer must have a CLEAR screening result and mandatory screening evidence before wallet activation.",
     "severity_rules": [
@@ -67,6 +68,7 @@
     "validation_logic": "FAIL when risk_level == HIGH and wallet_status == OPENED and risk_exception_approved == false. An approved exception with a reference and reviewer is a PASS for this control.",
     "unknown_conditions": [
       "Required risk information is unavailable to determine whether the control can be assessed."
+
     ],
     "expected": "High Risk customers must not be opened without an approved exception.",
     "severity_rules": [
@@ -106,6 +108,7 @@
     "validation_logic": "FAIL when name_ar is empty or contains no Arabic-script character. This MVP checks script presence only; it does not validate legal-name correctness or transliteration accuracy.",
     "unknown_conditions": [
       "Arabic name information is unavailable and the control cannot determine whether an Arabic-script name is present."
+
     ],
     "expected": "Customer record must contain an Arabic-script customer name.",
     "severity_rules": [
@@ -144,6 +147,7 @@
     "validation_logic": "FAIL when account_status == DORMANT and wallet_status == OPENED and dormant_handling_status != COMPLETED.",
     "unknown_conditions": [
       "Required dormant-account information is unavailable to determine whether the control can be assessed."
+
     ],
     "expected": "Dormant accounts must complete the required dormant-account handling before wallet activation.",
     "severity_rules": [
@@ -197,6 +201,7 @@
     "validation_logic": "FAIL when an approved-source customer is missing from the final report, an unexpected report customer exists, or any key field differs. Multiple mismatches for the same customer produce one RECON_001 finding with all mismatched fields in evidence.",
     "unknown_conditions": [
       "Required source or final report data is unavailable, preventing a reliable reconciliation."
+
     ],
     "expected": "The final wallet audit report must accurately reflect the approved source population and all required customer-level processing fields.",
     "severity_rules": [
