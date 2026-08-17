@@ -20,3 +20,6 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node.js local dependencies (Supabase CLI)
+node_modules/
