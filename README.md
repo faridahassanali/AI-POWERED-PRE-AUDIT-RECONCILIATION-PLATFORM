@@ -169,7 +169,7 @@ The MVP contains five deterministic controls.
 The project separates the **result of a control assessment** from the **lifecycle of the finding**.
 
 ```text
-assessment_status = PASS | FAIL | UNKNOWN
+assessment_status = PASS | FAIL | NOT_APPLICABLE
 
 finding_status =
     REVIEW
