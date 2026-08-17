@@ -22,7 +22,7 @@ sys.path.insert(
 import pandas as pd
 import pytest
 
-from controls import (
+from engine.controls import (
     screening_001,
     risk_001,
     arabic_name_001,
@@ -30,9 +30,9 @@ from controls import (
     run_all_controls,
 )
 
-from reconciliation import reconciliation_001
+from engine.reconciliation import reconciliation_001
 
-from data_loader import (
+from engine.data_loader import (
     load_data,
     build_unified_customer_record,
 )

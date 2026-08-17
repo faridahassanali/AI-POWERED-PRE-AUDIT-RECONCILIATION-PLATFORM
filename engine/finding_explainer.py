@@ -5,7 +5,9 @@ Transforms a validated finding into a structured,
 auditor-readable explanation.
 
 This layer is deterministic and does not make new
-compliance decisions. It only explains an existing finding.
+compliance decisions.
+
+AI explanation is handled separately after human confirmation.
 """
 
 from typing import Any
@@ -33,23 +35,35 @@ def _format_policy_references(
         if section:
             parts.append(f"section {section}")
 
-        formatted.append(" — ".join([
-            parts[0],
-            ", ".join(parts[1:]) if len(parts) > 1 else "",
-        ]).strip(" —"))
+        formatted.append(
+            " — ".join(
+                [
+                    parts[0],
+                    ", ".join(parts[1:]) if len(parts) > 1 else "",
+                ]
+            ).strip(" —")
+        )
 
     return formatted
 
 
-def explain_finding(
+def build_finding_explanation(
     finding: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Build an auditor-friendly explanation for one finding.
+    Build a deterministic, auditor-friendly explanation
+    for an already-generated finding.
 
-    Important:
-        This function does NOT determine whether a control passes
-        or fails. It only explains an already-generated finding.
+    This function does NOT determine whether a control passes
+    or fails.
+
+    It does NOT generate AI content.
+
+    It simply explains the existing finding and preserves
+    its original review status.
+
+    REVIEW findings are allowed here because this is only
+    deterministic traceability/explanation.
     """
 
     control_id = finding.get("control_id", "")
@@ -98,3 +112,24 @@ def explain_finding(
     }
 
     return explanation
+
+
+def explain_finding(
+    finding: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Explain a finding only after human confirmation.
+
+    REVIEW and REJECTED findings are blocked.
+
+    CONFIRMED findings may be passed to the AI explanation layer.
+    """
+
+    finding_status = finding.get("finding_status", "")
+
+    if finding_status != "CONFIRMED":
+        raise ValueError(
+            "AI explanation is only allowed for CONFIRMED findings."
+        )
+
+    return build_finding_explanation(finding)

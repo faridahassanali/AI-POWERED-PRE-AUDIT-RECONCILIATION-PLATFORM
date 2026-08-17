@@ -1,7 +1,8 @@
 """
 End-to-End Audit Pipeline.
 
-Pipeline:
+Stage 1 - Deterministic Pre-AI Audit
+-------------------------------------
 
 Data Loader
     ↓
@@ -15,9 +16,26 @@ Finding Validation
     ↓
 Finding Integrity
     ↓
+Human Review Gate
+    ↓
 Ground Truth Evaluation
     ↓
 Evaluation Report
+    ↓
+Audit Output
+
+
+Stage 2 - Post-Review Explanation
+----------------------------------
+
+Only CONFIRMED findings may be explained.
+
+REVIEW    → blocked
+REJECTED  → blocked
+CONFIRMED → explanation allowed
+
+The AI/explanation layer must never influence
+the deterministic compliance decision.
 """
 
 from __future__ import annotations
@@ -25,6 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 
@@ -33,24 +52,35 @@ from engine.data_loader import (
     build_unified_customer_record,
 )
 
-from engine.normalization import normalize_dataframe
+from engine.normalization import (
+    normalize_dataframe,
+)
 
-from engine.finding_validator import validate_finding_or_raise
+from engine.finding_validator import (
+    validate_finding_or_raise,
+)
 
-from engine.finding_integrity import validate_unique_findings
+from engine.finding_integrity import (
+    validate_unique_findings,
+)
 
 from engine.ground_truth_evaluator import (
     EvaluationResult,
     evaluate_findings,
 )
 
-from engine.evaluation_report import generate_evaluation_report
+from engine.evaluation_report import (
+    generate_evaluation_report,
+)
 
-from engine.controls import run_all_controls
+from engine.controls import (
+    run_all_controls,
+)
 
-from uuid import uuid4
+from engine.finding_explainer import (
+    explain_finding,
+)
 
-from engine.finding_explainer import explain_finding
 from engine.audit_trace import (
     create_audit_trace,
     complete_audit_trace,
@@ -61,20 +91,28 @@ from engine.audit_output import (
     build_audit_output,
 )
 
-from engine.audit_output import build_audit_output
 
 @dataclass
 class AuditPipelineResult:
+    """
+    Result of the deterministic pre-AI audit stage.
+    """
 
     generated_findings: list[dict[str, Any]]
+
     expected_findings: list[dict[str, Any]]
+
     evaluation: EvaluationResult
+
     report: str
 
+    # Empty during the pre-AI stage because findings
+    # are still awaiting human review.
     explanations: list[dict[str, Any]]
+
     audit_trace: Any
 
-    audit_output: Any
+    audit_output: AuditOutput
 
 
 def _normalize_tables(
@@ -90,6 +128,7 @@ def _normalize_tables(
     normalized_tables: dict[str, pd.DataFrame] = {}
 
     for name, dataframe in tables.items():
+
         normalized_tables[name] = normalize_dataframe(
             dataframe
         )
@@ -101,34 +140,68 @@ def _validate_generated_findings(
     findings: list[dict[str, Any]],
 ) -> None:
     """
-    Validate every generated finding against the
-    finding schema.
+    Validate every generated finding against
+    the finding schema.
     """
 
     for finding in findings:
-        validate_finding_or_raise(finding)
+
+        validate_finding_or_raise(
+            finding
+        )
+
+
+def _create_audit_trace(
+    audit_run_id: str,
+    unified: pd.DataFrame,
+):
+    """
+    Create the initial audit trace.
+    """
+
+    controls_executed = [
+        "SCREENING_001",
+        "RISK_001",
+        "ARABIC_NAME_001",
+        "DORMANT_001",
+        "RECON_001",
+    ]
+
+    return create_audit_trace(
+        audit_run_id=audit_run_id,
+        controls_executed=controls_executed,
+        total_records_evaluated=len(unified),
+    )
 
 
 def run_audit(
     data_dir: Path | str | None = None,
 ) -> AuditPipelineResult:
     """
-    Run the complete pre-audit pipeline.
+    Run Stage 1 of the audit pipeline.
 
-    Parameters
-    ----------
-    data_dir:
-        Optional custom data directory.
+    This stage:
 
-        If omitted, the default data directory configured
-        inside data_loader.py is used.
+    1. Loads data.
+    2. Normalizes data.
+    3. Builds unified customer records.
+    4. Runs deterministic controls.
+    5. Validates findings.
+    6. Validates finding uniqueness.
+    7. Creates the audit trace.
+    8. Evaluates against ground truth.
+    9. Generates the evaluation report.
+    10. Builds the canonical audit output.
 
-    Returns
-    -------
-    AuditPipelineResult
-        Contains generated findings, expected findings,
-        evaluation metrics, explanations, audit trace
-        and formatted report.
+    IMPORTANT
+    ---------
+
+    Findings remain in REVIEW status.
+
+    No explanations are generated here.
+
+    Human review must happen before the
+    explanation/AI stage.
     """
 
     # =========================================================
@@ -142,8 +215,11 @@ def run_audit(
     # =========================================================
 
     if data_dir is None:
+
         tables = load_data()
+
     else:
+
         tables = load_data(
             Path(data_dir)
         )
@@ -168,22 +244,13 @@ def run_audit(
     # 5. CREATE AUDIT TRACE
     # =========================================================
 
-    controls_executed = [
-        "SCREENING_001",
-        "RISK_001",
-        "ARABIC_NAME_001",
-        "DORMANT_001",
-        "RECON_001",
-    ]
-
-    audit_trace = create_audit_trace(
+    audit_trace = _create_audit_trace(
         audit_run_id=audit_run_id,
-        controls_executed=controls_executed,
-        total_records_evaluated=len(unified),
+        unified=unified,
     )
 
     # =========================================================
-    # 6. RUN ALL CONTROLS
+    # 6. RUN DETERMINISTIC CONTROLS
     # =========================================================
 
     generated_findings = run_all_controls(
@@ -192,10 +259,11 @@ def run_audit(
     )
 
     # =========================================================
-    # 7. ATTACH AUDIT RUN ID TO FINDINGS
+    # 7. ATTACH AUDIT RUN ID
     # =========================================================
 
     for finding in generated_findings:
+
         finding["audit_run_id"] = audit_run_id
 
     # =========================================================
@@ -215,16 +283,7 @@ def run_audit(
     )
 
     # =========================================================
-    # 10. FINDING EXPLAINABILITY
-    # =========================================================
-
-    explanations = [
-        explain_finding(finding)
-        for finding in generated_findings
-    ]
-
-    # =========================================================
-    # 11. COMPLETE AUDIT TRACE
+    # 10. COMPLETE AUDIT TRACE
     # =========================================================
 
     audit_trace = complete_audit_trace(
@@ -235,7 +294,7 @@ def run_audit(
     )
 
     # =========================================================
-    # 12. LOAD EXPECTED FINDINGS / GROUND TRUTH
+    # 11. LOAD EXPECTED FINDINGS / GROUND TRUTH
     # =========================================================
 
     expected_findings = normalized_tables[
@@ -245,7 +304,7 @@ def run_audit(
     )
 
     # =========================================================
-    # 13. GROUND TRUTH EVALUATION
+    # 12. GROUND TRUTH EVALUATION
     # =========================================================
 
     evaluation = evaluate_findings(
@@ -254,35 +313,91 @@ def run_audit(
     )
 
     # =========================================================
-    # 14. EVALUATION REPORT
+    # 13. EVALUATION REPORT
     # =========================================================
 
     report = generate_evaluation_report(
         evaluation
     )
-    
+
     # =========================================================
-    # 15. AUDIT OUTPUT / EVIDENCE PACKAGING
+    # 14. PRE-AI EXPLANATIONS
+    # =========================================================
+
+    # IMPORTANT:
+    #
+    # All generated findings are still in REVIEW status.
+    #
+    # Therefore, NO explanations are generated here.
+    #
+    # This is the human review gate.
+    #
+    # The deterministic audit stage must finish before
+    # any explanation or future AI processing occurs.
+
+    explanations: list[dict[str, Any]] = []
+
+    # =========================================================
+    # 15. BUILD AUDIT OUTPUT
     # =========================================================
 
     audit_output = build_audit_output(
-    audit_trace=audit_trace,
-    findings=generated_findings,
-    explanations=explanations,
-    evaluation=evaluation,
-    report=report,
+        audit_trace=audit_trace,
+        findings=generated_findings,
+        explanations=explanations,
+        evaluation=evaluation,
+        report=report,
     )
 
     # =========================================================
-    # 16. RETURN COMPLETE RESULT
+    # 16. RETURN PRE-AI RESULT
     # =========================================================
 
     return AuditPipelineResult(
-    generated_findings=generated_findings,
-    expected_findings=expected_findings,
-    evaluation=evaluation,
-    report=report,
-    explanations=explanations,
-    audit_trace=audit_trace,
-    audit_output=audit_output,
+        generated_findings=generated_findings,
+        expected_findings=expected_findings,
+        evaluation=evaluation,
+        report=report,
+        explanations=explanations,
+        audit_trace=audit_trace,
+        audit_output=audit_output,
     )
+
+
+def explain_confirmed_findings(
+    findings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Stage 2 of the audit pipeline.
+
+    Generate explanations ONLY for findings that have
+    already been confirmed by a human reviewer.
+
+    Allowed:
+
+        REVIEW    → blocked
+        REJECTED  → blocked
+        CONFIRMED → explained
+
+    This function does not perform the compliance decision.
+
+    It only explains findings that already passed the
+    human review gate.
+
+    The actual status validation is enforced by
+    explain_finding().
+    """
+
+    explanations: list[dict[str, Any]] = []
+
+    for finding in findings:
+
+        explanation = explain_finding(
+            finding
+        )
+
+        explanations.append(
+            explanation
+        )
+
+    return explanations
