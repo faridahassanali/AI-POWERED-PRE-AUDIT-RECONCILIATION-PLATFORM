@@ -1,9 +1,11 @@
 """
 Canonical Audit Output Contract.
 
-Combines findings, explanations, audit trace,
-evaluation, and report into one immutable-style
-integration object.
+Combines findings, optional explanations, audit trace,
+evaluation, and report into one integration object.
+
+During the pre-AI stage, findings may have no explanations
+because they are still awaiting human review.
 
 This layer does not make compliance decisions.
 """
@@ -15,17 +17,20 @@ from typing import Any
 @dataclass
 class AuditFindingOutput:
     """
-    One finding together with its explanation.
+    One finding together with its optional explanation.
+
+    Explanation is None while the finding is awaiting
+    human review.
     """
 
     finding: dict[str, Any]
-    explanation: dict[str, Any]
+    explanation: dict[str, Any] | None
 
 
 @dataclass
 class AuditOutput:
     """
-    Canonical output of one complete audit execution.
+    Canonical output of one audit execution.
     """
 
     audit_run_id: str
@@ -72,54 +77,84 @@ def _validate_finding_explanation_pair(
 def build_audit_output(
     audit_trace: Any,
     findings: list[dict[str, Any]],
-    explanations: list[dict[str, Any]],
+    explanations: list[dict[str, Any]] | None,
     evaluation: Any,
     report: str,
 ) -> AuditOutput:
     """
     Build the canonical audit output.
 
-    The function validates that every finding has
-    exactly one matching explanation.
+    Findings may be returned without explanations during
+    the pre-AI stage while they are awaiting human review.
 
-    It does not modify the original findings.
+    If explanations are provided, there must be exactly one
+    explanation for every finding and each explanation must
+    belong to the corresponding finding.
+
+    This function does not modify the original findings.
     """
-
-    if len(findings) != len(explanations):
-        raise ValueError(
-            "Each finding must have exactly one explanation."
-        )
 
     audit_run_id = audit_trace.audit_run_id
 
+    # ---------------------------------------------------------
+    # PRE-AI STAGE
+    # ---------------------------------------------------------
+    # No explanations have been generated yet.
+    #
+    # Every finding is still available for human review.
+    # Therefore, an empty explanation list is valid.
+    # ---------------------------------------------------------
+
+    if explanations is None:
+        explanations = []
+
+    if len(explanations) not in {0, len(findings)}:
+        raise ValueError(
+            "Explanations must either be empty or contain "
+            "exactly one explanation for every finding."
+        )
+
     paired_findings: list[AuditFindingOutput] = []
 
-    for finding, explanation in zip(
-        findings,
-        explanations,
-    ):
+    # ---------------------------------------------------------
+    # BUILD OUTPUT
+    # ---------------------------------------------------------
 
+    for index, finding in enumerate(findings):
+
+        # Every finding must belong to this audit run.
         if finding.get("audit_run_id") != audit_run_id:
             raise ValueError(
                 "Finding audit_run_id does not match "
                 "the audit trace."
             )
 
-        if explanation.get("audit_run_id") != audit_run_id:
-            raise ValueError(
-                "Explanation audit_run_id does not match "
-                "the audit trace."
-            )
+        # No explanation yet.
+        explanation = None
 
-        _validate_finding_explanation_pair(
-            finding,
-            explanation,
-        )
+        # If explanations exist, match them by position.
+        if explanations:
+            explanation = explanations[index]
+
+            if explanation.get("audit_run_id") != audit_run_id:
+                raise ValueError(
+                    "Explanation audit_run_id does not match "
+                    "the audit trace."
+                )
+
+            _validate_finding_explanation_pair(
+                finding,
+                explanation,
+            )
 
         paired_findings.append(
             AuditFindingOutput(
                 finding=dict(finding),
-                explanation=dict(explanation),
+                explanation=(
+                    dict(explanation)
+                    if explanation is not None
+                    else None
+                ),
             )
         )
 

@@ -110,3 +110,18 @@ def test_reviewed_by_is_required():
             finding,
             reviewed_by=""
         )
+
+
+def test_cannot_reject_confirmed_finding():
+    finding = make_finding()
+
+    confirm_finding(
+        finding,
+        reviewed_by="Sherine"
+    )
+
+    with pytest.raises(ValueError):
+        reject_finding(
+            finding,
+            reviewed_by="Sherine"
+        )

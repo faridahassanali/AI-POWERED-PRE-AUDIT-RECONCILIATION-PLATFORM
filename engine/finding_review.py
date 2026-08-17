@@ -11,6 +11,7 @@ REVIEW -> REJECTED
 
 from datetime import datetime, timezone
 from typing import Any
+from engine.finding_validator import validate_finding_or_raise
 
 
 def _review_finding(
@@ -44,6 +45,11 @@ def _review_finding(
     finding["reviewed_by"] = reviewed_by
     finding["review_timestamp"] = datetime.now(timezone.utc).isoformat()
     finding["reviewer_notes"] = reviewer_notes
+
+    # Re-validate against the schema after mutation — a review
+    # decision must never produce a finding that fails the contract
+    # the rest of the pipeline (and the future AI layer) relies on.
+    validate_finding_or_raise(finding)
 
     return finding
 

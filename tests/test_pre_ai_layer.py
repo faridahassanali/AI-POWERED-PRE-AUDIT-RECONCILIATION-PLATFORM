@@ -6,6 +6,9 @@ def test_pre_ai_pipeline_produces_complete_audit_result():
     """
     Verify that the deterministic pre-AI pipeline produces
     all artifacts required by the AI layer.
+
+    Findings remain in REVIEW status and therefore do not
+    receive explanations before human review.
     """
 
     result = run_audit()
@@ -22,6 +25,7 @@ def test_pre_ai_pipeline_produces_complete_audit_result():
 
     assert result.audit_trace.completed_at is not None
     assert result.audit_trace.total_records_evaluated > 0
+
     assert (
         result.audit_trace.total_findings_generated
         == len(result.generated_findings)
@@ -39,8 +43,10 @@ def test_pre_ai_pipeline_produces_complete_audit_result():
 
 def test_every_finding_is_traceable():
     """
-    Every generated finding must be linked to the audit run
-    and have a corresponding explanation.
+    Every generated finding must be linked to the audit run.
+
+    Findings are still awaiting human review, so explanations
+    must NOT exist at the pre-AI stage.
     """
 
     result = run_audit()
@@ -50,89 +56,44 @@ def test_every_finding_is_traceable():
         for finding in result.generated_findings
     }
 
-    explanations_by_id = {
-        explanation["finding_id"]: explanation
-        for explanation in result.explanations
-    }
+    assert len(findings_by_id) == len(
+        result.generated_findings
+    )
 
-    assert len(findings_by_id) == len(result.generated_findings)
-    assert len(explanations_by_id) == len(result.explanations)
-
+    # All generated findings must belong to this audit run.
     for finding in result.generated_findings:
-
-        finding_id = finding["finding_id"]
 
         assert finding["audit_run_id"] == (
             result.audit_trace.audit_run_id
         )
 
-        assert finding_id in explanations_by_id
+        # Findings must remain pending human review.
+        assert finding["finding_status"] == "REVIEW"
 
-        explanation = explanations_by_id[finding_id]
-
-        assert explanation["finding_id"] == finding_id
-        assert explanation["audit_run_id"] == (
-            result.audit_trace.audit_run_id
-        )
-        assert explanation["control_id"] == finding["control_id"]
-        assert explanation["customer_id"] == finding["customer_id"]
+    # No explanations are generated before human confirmation.
+    assert result.explanations == []
 
 
 def test_explanations_preserve_deterministic_finding_information():
     """
-    Explainability must describe the finding without changing
-    the underlying deterministic decision.
+    Explanations are intentionally absent during the pre-AI stage.
+
+    Explanation generation happens only after a finding has
+    been CONFIRMED by a human reviewer.
     """
 
     result = run_audit()
 
-    findings_by_id = {
-        finding["finding_id"]: finding
-        for finding in result.generated_findings
-    }
+    # No finding has passed the human review gate yet.
+    assert result.explanations == []
 
-    for explanation in result.explanations:
+    # Findings themselves remain deterministic and traceable.
+    for finding in result.generated_findings:
 
-        finding = findings_by_id[explanation["finding_id"]]
+        assert finding["finding_status"] == "REVIEW"
 
-        assert (
-            explanation["control_id"]
-            == finding["control_id"]
-        )
-
-        assert (
-            explanation["customer_id"]
-            == finding["customer_id"]
-        )
-
-        assert (
-            explanation["severity"]
-            == finding["severity"]
-        )
-
-        assert (
-            explanation["assessment_status"]
-            == finding["assessment_status"]
-        )
-
-        assert (
-            explanation["finding_status"]
-            == finding["finding_status"]
-        )
-
-        assert (
-            explanation["expected_condition"]
-            == finding["expected"]
-        )
-
-        assert (
-            explanation["observed_condition"]
-            == finding["actual"]
-        )
-
-        assert (
-            explanation["evidence"]
-            == finding["evidence"]
+        assert finding["audit_run_id"] == (
+            result.audit_trace.audit_run_id
         )
 
 
@@ -159,7 +120,11 @@ def test_pre_ai_evaluation_is_complete():
 def test_audit_output_is_ready_for_ai_consumption():
     """
     Verify that the integrated audit output contains the
-    structured information that the future AI layer will consume.
+    structured deterministic information that the future AI
+    layer will consume.
+
+    Explanations are intentionally None because findings
+    are still awaiting human review.
     """
 
     result = run_audit()
@@ -186,22 +151,16 @@ def test_audit_output_is_ready_for_ai_consumption():
     for item in output.findings:
 
         assert item.finding is not None
-        assert item.explanation is not None
 
-        assert (
-            item.finding["finding_id"]
-            == item.explanation["finding_id"]
-        )
+        # Explanation must not exist before human confirmation.
+        assert item.explanation is None
 
         assert (
             item.finding["audit_run_id"]
             == output.audit_run_id
         )
 
-        assert (
-            item.explanation["audit_run_id"]
-            == output.audit_run_id
-        )
+        assert item.finding["finding_status"] == "REVIEW"
 
 
 def test_ai_layer_must_not_be_required_for_deterministic_audit():
@@ -209,14 +168,17 @@ def test_ai_layer_must_not_be_required_for_deterministic_audit():
     The pre-AI audit pipeline must remain fully functional
     without any LLM/AI dependency.
 
-    This guarantees that AI will be an enhancement layer,
-    not the source of compliance decisions.
+    AI/explanations are not required for the deterministic
+    audit stage.
     """
 
     result = run_audit()
 
     assert result.generated_findings
-    assert result.explanations
+
+    # No explanations before human review.
+    assert result.explanations == []
+
     assert result.audit_trace.completed_at is not None
 
     # Deterministic evaluation is already complete.
