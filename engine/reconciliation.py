@@ -9,6 +9,11 @@ One finding is produced per customer, containing all mismatched fields.
 
 import pandas as pd
 
+try:
+    from .finding_builder import build_finding
+except ImportError:
+    from finding_builder import build_finding
+
 
 RECON_FIELDS = [
     "name_ar",
@@ -19,7 +24,9 @@ RECON_FIELDS = [
 ]
 
 
-def reconciliation_001(tables: dict[str, pd.DataFrame]) -> list[dict]:
+def reconciliation_001(
+    tables: dict[str, pd.DataFrame],
+) -> list[dict]:
     """
     Reconcile the approved source population and processing data
     against the final wallet audit report.
@@ -41,7 +48,6 @@ def reconciliation_001(tables: dict[str, pd.DataFrame]) -> list[dict]:
         ["customer_id", "name_ar"]
     ].copy()
 
-    # Add customer master fields
     customer_fields = [
         "customer_id",
         "risk_level",
@@ -55,7 +61,6 @@ def reconciliation_001(tables: dict[str, pd.DataFrame]) -> list[dict]:
         how="left",
     )
 
-    # Add screening status
     source = source.merge(
         screening[
             ["customer_id", "screening_status"]
@@ -121,26 +126,26 @@ def reconciliation_001(tables: dict[str, pd.DataFrame]) -> list[dict]:
                 source_value = str(
                     row.get(
                         f"{field}_source",
-                        ""
+                        "",
                     )
                 ).strip()
 
                 report_value = str(
                     row.get(
                         f"{field}_report",
-                        ""
+                        "",
                     )
                 ).strip()
 
                 # -------------------------------------------------
-                # IMPORTANT:
+                # Screening exception
+                # -------------------------------------------------
                 #
-                # Screening mismatches caused by PENDING / NO_MATCH
-                # with missing evidence are already handled by
-                # SCREENING_001.
+                # SCREENING_001 already handles non-CLEAR
+                # screening statuses when evidence is missing.
                 #
-                # Therefore they should not create an additional
-                # RECON_001 finding.
+                # Therefore, don't duplicate those cases as
+                # RECON_001 findings.
                 # -------------------------------------------------
 
                 if field == "screening_status":
@@ -154,14 +159,13 @@ def reconciliation_001(tables: dict[str, pd.DataFrame]) -> list[dict]:
                         evidence_present = str(
                             evidence_row.iloc[0].get(
                                 "screening_evidence_present",
-                                ""
+                                "",
                             )
                         ).strip().lower()
 
-                        # If screening is not CLEAR and evidence
-                        # is missing, SCREENING_001 handles it.
                         if (
-                            source_value in {
+                            source_value
+                            in {
                                 "PENDING",
                                 "NO_MATCH",
                                 "HIGH_RISK",
@@ -189,40 +193,33 @@ def reconciliation_001(tables: dict[str, pd.DataFrame]) -> list[dict]:
         # Create RECON_001 finding
         # -----------------------------------------------------
 
-        findings.append(
-            {
-                "control_id": "RECON_001",
-
+        finding = build_finding(
+            control_id="RECON_001",
+            customer_id=customer_id,
+            severity="HIGH",
+            assessment_status="FAIL",
+            finding_status="REVIEW",
+            expected=(
+                "Final audit report must accurately represent "
+                "the approved source and processing data."
+            ),
+            actual=(
+                "Final audit report contains one or more "
+                "reconciliation mismatches."
+            ),
+            evidence={
                 "customer_id": customer_id,
-
-                "severity": "HIGH",
-
-                "assessment_status": "FAIL",
-
-                "finding_status": "REVIEW",
-
-                "expected": (
-                    "Final audit report must accurately represent "
-                    "the approved source and processing data."
-                ),
-
-                "actual": (
-                    "Final audit report contains one or more "
-                    "reconciliation mismatches."
-                ),
-
-                "evidence": {
-                    "mismatches": mismatches
-                },
-
-                "policy_references": [
-                    {
-                        "policy_id": "RECON-POLICY-001",
-                        "version": "1.0",
-                        "section": "Requirements",
-                    }
-                ],
-            }
+                "mismatches": mismatches,
+            },
+            policy_references=[
+                {
+                    "policy_id": "RECON-POLICY-001",
+                    "version": "1.0",
+                    "section": "Requirements",
+                }
+            ],
         )
+
+        findings.append(finding)
 
     return findings
