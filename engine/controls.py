@@ -339,7 +339,7 @@ def dormant_001(record):
         },
         policy_references=[
             {
-                "policy_id": "DORMANT_001",
+                "policy_id": "DORMANT-POLICY-001",
                 "version": "1.0",
                 "section": "Requirements",
             }
