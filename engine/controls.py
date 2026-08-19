@@ -262,7 +262,7 @@ def arabic_name_001(record):
             {
                 "policy_id": "DATA-POLICY-001",
                 "version": "1.0",
-                "section": "Customer Data",
+                "section": "Requirements",
             }
         ],
     )
