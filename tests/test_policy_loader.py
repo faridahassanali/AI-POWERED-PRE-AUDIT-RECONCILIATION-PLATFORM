@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -41,7 +42,10 @@ class TestPolicyLoader(unittest.TestCase):
             for policy in policies
         }
 
-        self.assertEqual(policy_ids, EXPECTED_POLICY_IDS)
+        self.assertEqual(
+            policy_ids,
+            EXPECTED_POLICY_IDS,
+        )
 
     def test_policy_metadata_is_loaded(self):
         policies = load_policies(DATA_DIR)
@@ -57,12 +61,19 @@ class TestPolicyLoader(unittest.TestCase):
 
         for policy in policies:
             for section in policy["sections"]:
+
                 self.assertEqual(
                     set(section.keys()),
-                    {"section", "content"},
+                    {
+                        "section",
+                        "content",
+                    },
                 )
 
-                self.assertTrue(section["section"])
+                self.assertTrue(
+                    section["section"]
+                )
+
                 self.assertIsInstance(
                     section["content"],
                     str,
@@ -71,7 +82,9 @@ class TestPolicyLoader(unittest.TestCase):
     def test_policy_content_is_preserved_verbatim(self):
         path = DATA_DIR / "01_customer_screening_policy.md"
 
-        original = path.read_text(encoding="utf-8")
+        original = path.read_text(
+            encoding="utf-8"
+        )
 
         policy = parse_policy(original)
 
@@ -84,7 +97,11 @@ class TestPolicyLoader(unittest.TestCase):
         start_marker = "## Requirements\n"
         end_marker = "## Audit Evidence"
 
-        start = original.index(start_marker) + len(start_marker)
+        start = (
+            original.index(start_marker)
+            + len(start_marker)
+        )
+
         end = original.index(end_marker)
 
         expected = original[start:end]
@@ -105,14 +122,16 @@ This policy has no policy ID or version.
 Something.
 """
 
-        with self.assertRaises(PolicyLoadError):
+        with self.assertRaises(
+            PolicyLoadError
+        ):
             parse_policy(malformed)
 
     def test_duplicate_policy_ids_are_rejected(self):
         policy = {
             "policy_id": "TEST-POLICY",
             "version": "1.0",
-            "title": "Test",
+            "title": "Test Policy",
             "sections": [
                 {
                     "section": "Requirements",
@@ -121,63 +140,170 @@ Something.
             ],
         }
 
-        from engine.policy_registry import PolicyRegistry
-
         registry = PolicyRegistry()
 
         registry.register(policy)
 
-        with self.assertRaises(PolicyRegistryError):
+        with self.assertRaises(
+            PolicyRegistryError
+        ):
             registry.register(policy)
 
-    def test_registry_resolves_all_policies(self):
-        registry = load_policy_registry(DATA_DIR)
+    def test_registry_rejects_incomplete_policy(self):
+        incomplete_policy = {
+            "policy_id": "TEST-POLICY",
+        }
 
-        self.assertEqual(len(registry), 6)
+        registry = PolicyRegistry()
+
+        with self.assertRaises(
+            PolicyRegistryError
+        ):
+            registry.register(
+                incomplete_policy
+            )
+
+    def test_registry_get_unknown_policy_raises_key_error(self):
+        registry = load_policy_registry(
+            DATA_DIR
+        )
+
+        with self.assertRaises(KeyError):
+            registry.get(
+                "DOES-NOT-EXIST"
+            )
+
+    def test_duplicate_policy_ids_from_files_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+
+            temp_path = Path(temp_dir)
+
+            policy_1 = """\
+# First Test Policy
+
+Policy ID: TEST-POLICY Version: 1.0
+
+## Requirements
+
+First policy.
+"""
+
+            policy_2 = """\
+# Second Test Policy
+
+Policy ID: TEST-POLICY Version: 1.0
+
+## Requirements
+
+Second policy.
+"""
+
+            (
+                temp_path
+                / "01_first_policy.md"
+            ).write_text(
+                policy_1,
+                encoding="utf-8",
+            )
+
+            (
+                temp_path
+                / "02_second_policy.md"
+            ).write_text(
+                policy_2,
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(
+                PolicyRegistryError
+            ):
+                load_policy_registry(
+                    temp_path
+                )
+
+    def test_registry_resolves_all_policies(self):
+        registry = load_policy_registry(
+            DATA_DIR
+        )
+
+        self.assertEqual(
+            len(registry),
+            6,
+        )
 
         for policy_id in EXPECTED_POLICY_IDS:
-            self.assertTrue(registry.contains(policy_id))
+
+            self.assertTrue(
+                registry.contains(
+                    policy_id
+                )
+            )
+
             self.assertIsNotNone(
-                registry.resolve(policy_id)
+                registry.resolve(
+                    policy_id
+                )
             )
 
     def test_every_controls_json_policy_resolves(self):
-        controls_path = DATA_DIR / "controls.json"
+        controls_path = (
+            DATA_DIR / "controls.json"
+        )
 
         controls = json.loads(
-            controls_path.read_text(encoding="utf-8")
+            controls_path.read_text(
+                encoding="utf-8"
+            )
         )
 
-        referenced_policy_ids = self._extract_policy_ids(
-            controls
+        referenced_policy_ids = (
+            self._extract_policy_ids(
+                controls
+            )
         )
 
-        registry = load_policy_registry(DATA_DIR)
+        registry = load_policy_registry(
+            DATA_DIR
+        )
 
         missing = {
             policy_id
-            for policy_id in referenced_policy_ids
-            if not registry.contains(policy_id)
+            for policy_id
+            in referenced_policy_ids
+            if not registry.contains(
+                policy_id
+            )
         }
 
-        self.assertEqual(missing, set())
+        self.assertEqual(
+            missing,
+            set(),
+        )
 
     def _extract_policy_ids(self, value):
         found = set()
 
         if isinstance(value, dict):
+
             if "policy_id" in value:
-                found.add(value["policy_id"])
+                found.add(
+                    value["policy_id"]
+                )
 
             for child in value.values():
                 found.update(
-                    self._extract_policy_ids(child)
+                    self._extract_policy_ids(
+                        child
+                    )
                 )
 
         elif isinstance(value, list):
+
             for child in value:
                 found.update(
-                    self._extract_policy_ids(child)
+                    self._extract_policy_ids(
+                        child
+                    )
                 )
 
         return found

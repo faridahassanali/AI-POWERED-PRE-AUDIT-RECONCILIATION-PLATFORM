@@ -1,15 +1,18 @@
 from pathlib import Path
 
-from engine.policy_loader import load_policies
+from engine.policy_loader import (
+    load_policies,
+    validate_policy,
+)
 
 
 class PolicyRegistryError(ValueError):
-    """Raised when the policy registry is invalid."""
+    """Raised when the policy registry receives an invalid policy."""
 
 
 class PolicyRegistry:
     """
-    Registry of policies indexed by policy_id.
+    Registry of validated policies indexed by policy_id.
     """
 
     def __init__(self, policies=None):
@@ -20,14 +23,35 @@ class PolicyRegistry:
                 self.register(policy)
 
     def register(self, policy: dict) -> None:
-        """Register one policy."""
+        """
+        Validate and register one policy.
 
-        policy_id = policy.get("policy_id")
+        A policy must contain:
+            - policy_id
+            - version
+            - title
+            - sections
 
-        if not policy_id:
+        Duplicate policy IDs are rejected.
+        """
+
+        if not isinstance(policy, dict):
             raise PolicyRegistryError(
-                "Cannot register a policy without policy_id."
+                "Policy must be a dictionary."
             )
+
+        # Important:
+        # The Registry validates independently of the Loader.
+        # This prevents callers from registering incomplete
+        # policies directly.
+        try:
+            validate_policy(policy)
+        except Exception as exc:
+            raise PolicyRegistryError(
+                f"Invalid policy: {exc}"
+            ) from exc
+
+        policy_id = policy["policy_id"]
 
         if policy_id in self._policies:
             raise PolicyRegistryError(
@@ -38,9 +62,9 @@ class PolicyRegistry:
 
     def get(self, policy_id: str) -> dict:
         """
-        Return a policy by ID.
+        Return a policy by policy_id.
 
-        Raises KeyError if it doesn't exist.
+        Raises KeyError if the policy does not exist.
         """
 
         try:
@@ -51,12 +75,16 @@ class PolicyRegistry:
             ) from None
 
     def resolve(self, policy_id: str) -> dict | None:
-        """Return a policy or None if it doesn't exist."""
+        """
+        Return a policy by policy_id.
+
+        Returns None if the policy does not exist.
+        """
 
         return self._policies.get(policy_id)
 
     def contains(self, policy_id: str) -> bool:
-        """Check whether a policy exists."""
+        """Return True if a policy is registered."""
 
         return policy_id in self._policies
 
@@ -78,7 +106,12 @@ class PolicyRegistry:
 
 
 def load_policy_registry(data_dir: Path) -> PolicyRegistry:
-    """Load all policies and build a registry."""
+    """
+    Load all policies from data_dir and build a registry.
+
+    The PolicyRegistry will validate every policy again when
+    registering it.
+    """
 
     policies = load_policies(data_dir)
 
