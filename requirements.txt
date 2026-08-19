@@ -6,9 +6,8 @@ jsonschema>=4.0
 pytest>=7.0
 
 # RAG + LLM — only needed later (Step 7: policy retrieval + explanation generation)
-# Uncomment when you reach that stage:
-# chromadb>=0.4
-# sentence-transformers>=2.2
+qdrant-client>=1.9
+sentence-transformers>=2.2
 # anthropic>=0.25
 
 supabase>=2.0

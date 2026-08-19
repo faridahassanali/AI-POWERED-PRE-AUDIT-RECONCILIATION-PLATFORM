@@ -23,3 +23,7 @@ Thumbs.db
 
 # Node.js local dependencies (Supabase CLI)
 node_modules/
+
+# Qdrant local storage (generated data, not source)
+.qdrant_storage/
+RAG/.qdrant_storage/
