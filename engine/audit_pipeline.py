@@ -81,6 +81,10 @@ from engine.finding_explainer import (
     explain_finding,
 )
 
+from engine.ai_input import (
+    build_ai_input,
+)
+
 from engine.audit_trace import (
     create_audit_trace,
     complete_audit_trace,
@@ -371,29 +375,22 @@ def explain_confirmed_findings(
     Stage 2 of the audit pipeline.
 
     Generate explanations ONLY for findings that have
-    already been confirmed by a human reviewer.
+    passed human review and are CONFIRMED.
 
-    Allowed:
-
-        REVIEW    → blocked
-        REJECTED  → blocked
-        CONFIRMED → explained
-
-    This function does not perform the compliance decision.
-
-    It only explains findings that already passed the
-    human review gate.
-
-    The actual status validation is enforced by
-    explain_finding().
+    The AI Input Contract enforces the confirmed-only gate
+    before the explanation layer is called.
     """
 
     explanations: list[dict[str, Any]] = []
 
     for finding in findings:
 
-        explanation = explain_finding(
+        ai_input = build_ai_input(
             finding
+        )
+
+        explanation = explain_finding(
+            ai_input
         )
 
         explanations.append(
