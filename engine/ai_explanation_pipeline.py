@@ -63,6 +63,7 @@ from engine.ai_output_validation import (
 )
 from engine.data_loader import DATA_DIR
 from engine.llm.base import LLMError, LLMProvider
+from engine.llm.hallucination_tripwire import check_for_hallucinations_or_raise
 from engine.llm.router import explain
 from engine.policy_registry import PolicyRegistry, load_policy_registry
 from RAG.retriever import retrieve_for_finding
@@ -134,6 +135,16 @@ def generate_ai_explanation_for_finding(
             ai_input,
             primary=primary,
             fallback=fallback,
+        )
+
+        # Task A's own safeguard on its own output -- runs BEFORE
+        # Task B's validation, since a fabricated fact in the free
+        # text is a different failure mode than a bad citation, and
+        # catching it here is more specific than letting it flow
+        # through to a human reviewer.
+        check_for_hallucinations_or_raise(
+            ai_output=ai_output,
+            ai_input=ai_input,
         )
 
         validate_ai_output_or_raise(
