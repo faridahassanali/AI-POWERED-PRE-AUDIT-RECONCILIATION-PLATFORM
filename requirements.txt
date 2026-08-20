@@ -8,6 +8,6 @@ pytest>=7.0
 # RAG + LLM — only needed later (Step 7: policy retrieval + explanation generation)
 qdrant-client>=1.9
 sentence-transformers>=2.2
-# anthropic>=0.25
+requests>=2.31
 
 supabase>=2.0
