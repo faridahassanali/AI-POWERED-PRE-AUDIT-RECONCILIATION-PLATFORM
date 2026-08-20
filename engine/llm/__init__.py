@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from engine.llm.router import explain, LLMAllProvidersFailedError
 from engine.llm.base import (
     LLMError,
