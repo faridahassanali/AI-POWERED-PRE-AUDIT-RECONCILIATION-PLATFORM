@@ -33,6 +33,7 @@ from engine.audit_pipeline import run_audit
 from engine.finding_review import confirm_finding, reject_finding
 from engine.llm.base import LLMExplanation
 from engine.policy_registry import load_policy_registry
+from RAG.retriever import retrieve_for_finding
 from pathlib import Path
 
 
@@ -218,16 +219,32 @@ def test_citation_outside_own_policy_context_is_caught(
     actually given. This must be caught independently of the
     citation-outside-registry case already covered in the original
     test file.
+
+    NOTE on a bug fixed here: `confirmed_finding` (straight out of
+    run_audit() + confirm_finding()) never has a `policy_context` key
+    at all -- that's only added later, inside
+    generate_ai_explanation_for_finding() itself, via
+    retrieve_for_finding(). Reading `confirmed_finding.get(
+    "policy_context", [])` here always returned [], so nothing was
+    ever actually excluded. Combined with PolicyRegistry.ids()
+    returning a `set` (whose iteration order is randomized per-process
+    by Python's string hash randomization), the "unrelated" policy_id
+    picked below was effectively RANDOM every run -- occasionally
+    coinciding with the finding's own real policy_id and making this
+    test intermittently, non-deterministically fail. Fixed by
+    resolving the finding's REAL policy_context the same way the
+    pipeline does, and picking from a sorted (deterministic) id list.
     """
 
-    own_policy_ids = {
-        chunk["policy_id"]
-        for chunk in confirmed_finding.get("policy_context", [])
-    }
+    real_policy_context = retrieve_for_finding(
+        finding=confirmed_finding, registry=real_registry
+    )
+    own_policy_ids = {chunk["policy_id"] for chunk in real_policy_context}
 
-    # Any registry policy not part of this finding's own context.
+    # sorted() for a deterministic pick -- no more dependence on set
+    # iteration order / hash randomization.
     unrelated_policy_id = next(
-        pid for pid in real_registry.ids() if pid not in own_policy_ids
+        pid for pid in sorted(real_registry.ids()) if pid not in own_policy_ids
     )
 
     result = generate_ai_explanation_for_finding(
