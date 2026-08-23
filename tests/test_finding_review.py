@@ -125,3 +125,57 @@ def test_cannot_reject_confirmed_finding():
             finding,
             reviewed_by="Sherine"
         )
+from engine.finding_review import (
+    get_confirmed_findings,
+)
+
+
+def test_get_confirmed_findings_returns_only_confirmed():
+    findings = [
+        {
+            "finding_id": "F001",
+            "finding_status": "CONFIRMED",
+        },
+        {
+            "finding_id": "F002",
+            "finding_status": "REJECTED",
+        },
+        {
+            "finding_id": "F003",
+            "finding_status": "REVIEW",
+        },
+        {
+            "finding_id": "F004",
+            "finding_status": "CONFIRMED",
+        },
+    ]
+
+    confirmed = get_confirmed_findings(findings)
+
+    assert len(confirmed) == 2
+
+    assert [
+        finding["finding_id"]
+        for finding in confirmed
+    ] == [
+        "F001",
+        "F004",
+    ]
+def test_get_confirmed_findings_does_not_modify_input():
+    findings = [
+        {
+            "finding_id": "F001",
+            "finding_status": "CONFIRMED",
+        },
+        {
+            "finding_id": "F002",
+            "finding_status": "REJECTED",
+        },
+    ]
+
+    original = [finding.copy() for finding in findings]
+
+    result = get_confirmed_findings(findings)
+
+    assert findings == original
+    assert result is not findings    
