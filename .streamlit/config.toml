@@ -1,0 +1,16 @@
+[theme]
+# ---- Derived from the app logo (gold top / orange-red bottom / near-black line) ----
+# Accent used for buttons, active widgets, links, and the default chart color.
+primaryColor = "#D9531E"
+
+# Main content area: soft warm off-white instead of stark white -> feels calmer, not "poppy".
+backgroundColor = "#FBF8F4"
+
+# Sidebar / cards background: very light warm tint pulled from the logo's gold.
+secondaryBackgroundColor = "#F5ECDD"
+
+# Body text: near-black but softened (not pure #000000) so it's easy on the eyes.
+textColor = "#2B2B28"
+
+font = "sans serif"
+base = "light"

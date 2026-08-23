@@ -30,6 +30,8 @@ later without changing the UI structure.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -44,14 +46,143 @@ from engine.policy_registry import load_policy_registry
 
 
 # =========================================================
+# BRANDING / LOGO
+# =========================================================
+# Put the bank logo file at assets/logo.png (next to this app.py) and it
+# will replace the emoji icons automatically. If the file isn't there
+# yet, the UI falls back to the emoji so the app never breaks.
+
+APP_DIR = Path(__file__).parent
+LOGO_PATH = APP_DIR / "assets" / "logo.png"
+_LOGO_AVAILABLE = LOGO_PATH.exists()
+
+
+def render_page_header(title: str, fallback_icon: str) -> None:
+    """
+    Render a page title with the bank logo beside it.
+
+    Falls back to `fallback_icon + title` (the old emoji-based
+    style) if assets/logo.png hasn't been added to the repo yet.
+    """
+
+    if _LOGO_AVAILABLE:
+
+        logo_col, title_col = st.columns(
+            [1, 6],
+            vertical_alignment="center",
+        )
+
+        with logo_col:
+            st.image(
+                str(LOGO_PATH),
+                width=120,
+            )
+
+        with title_col:
+            st.title(title)
+
+    else:
+
+        st.title(
+            f"{fallback_icon} {title}"
+        )
+
+
+# =========================================================
 # PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
     page_title="Pre-Audit Reconciliation",
-    page_icon="🔎",
+    page_icon=(
+        str(LOGO_PATH)
+        if _LOGO_AVAILABLE
+        else "🔎"
+    ),
     layout="wide",
 )
+
+
+# =========================================================
+# THEME / PALETTE
+# =========================================================
+# Colors pulled from the app logo (gold top / orange-red bottom / near-black
+# line). Kept muted/desaturated on purpose so the UI stays clean instead of
+# looking "poppy". These are UI-only constants — no business logic here.
+
+BRAND_CRITICAL = "#A8321A"   # deep brick red — most intense, most urgent
+BRAND_HIGH = "#D9531E"       # primary orange-red (from the logo bottom)
+BRAND_MEDIUM = "#E8A33D"     # muted gold (from the logo top)
+BRAND_LOW = "#F0C978"        # light gold/cream — least intense, least urgent
+
+# A single readable gradient: darkest/most saturated = most urgent,
+# lightest = least urgent. Same brand family end-to-end, so every bar
+# still visually "belongs" together instead of looking like unrelated
+# random colors.
+SEVERITY_CHART_COLORS = {
+    "CRITICAL": BRAND_CRITICAL,
+    "HIGH": BRAND_HIGH,
+    "MEDIUM": BRAND_MEDIUM,
+    "LOW": BRAND_LOW,
+}
+
+SEVERITY_LEGEND = [
+    ("CRITICAL", BRAND_CRITICAL, "Needs immediate attention"),
+    ("HIGH", BRAND_HIGH, "High priority — review soon"),
+    ("MEDIUM", BRAND_MEDIUM, "Moderate priority"),
+    ("LOW", BRAND_LOW, "Low priority / minor"),
+]
+
+# Same intensity logic applied to review status: darker = further along
+# a "needs action" scale, lighter = settled/no action needed. Any status
+# not listed here falls back to the neutral color below.
+STATUS_CHART_COLORS = {
+    "REVIEW": BRAND_MEDIUM,
+    "CONFIRMED": BRAND_HIGH,
+    "REJECTED": BRAND_CRITICAL,
+}
+
+STATUS_CHART_FALLBACK_COLOR = "#B8AFA0"  # neutral warm gray for any other status
+
+STATUS_LEGEND = [
+    ("REVIEW", BRAND_MEDIUM, "Awaiting a reviewer decision"),
+    ("CONFIRMED", BRAND_HIGH, "Confirmed by a human reviewer"),
+    ("REJECTED", BRAND_CRITICAL, "Rejected by a human reviewer"),
+]
+
+
+def render_color_legend(items: list[tuple[str, str, str]]) -> None:
+    """
+    Render a small "what does this color mean" legend under a chart.
+
+    items: list of (label, hex_color, description) tuples.
+    Pure display helper — does not touch any pipeline data.
+    """
+
+    swatches = "".join(
+        f"""
+        <div style="display:flex;align-items:center;gap:6px;
+                     margin:2px 14px 2px 0;">
+            <span style="display:inline-block;width:12px;height:12px;
+                         border-radius:3px;background:{color};
+                         flex-shrink:0;"></span>
+            <span style="font-size:0.85rem;">
+                <b>{label}</b> — {description}
+            </span>
+        </div>
+        """
+        for label, color, description in items
+    )
+
+    st.markdown(
+        f"""
+        <div style="display:flex;flex-wrap:wrap;
+                     padding:8px 2px 4px 2px;">
+            {swatches}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =========================================================
@@ -398,7 +529,7 @@ def render_findings_list(
 ) -> None:
     """Render findings list with search, filters and sorting."""
 
-    st.title("🔎 Audit Findings")
+    render_page_header("Audit Findings", "🔎")
 
     if not findings:
         st.info(
@@ -1100,9 +1231,7 @@ def render_dashboard(
     Severity distribution is based on the generated findings.
     """
 
-    st.title(
-        "📊 Audit Dashboard"
-    )
+    render_page_header("Audit Dashboard", "📊")
 
     st.caption(
         "Deterministic audit evaluation and finding summary"
@@ -1213,21 +1342,28 @@ def render_dashboard(
             )
         )
 
-        severity_counts.index = [
-            f"{SEVERITY_COLOR.get(level, '')} {level}"
-            for level in severity_counts.index
-        ]
-
-        severity_df = (
+        severity_chart_df = (
             severity_counts
             .rename("Findings")
             .to_frame()
         )
 
+        # One column per severity level so each bar can carry its own
+        # on-brand color instead of the Streamlit-default near-black bars.
+        severity_chart_df = severity_chart_df.T
+
         st.bar_chart(
-            severity_df,
+            severity_chart_df,
             width="stretch",
+            color=[
+                SEVERITY_CHART_COLORS["CRITICAL"],
+                SEVERITY_CHART_COLORS["HIGH"],
+                SEVERITY_CHART_COLORS["MEDIUM"],
+                SEVERITY_CHART_COLORS["LOW"],
+            ],
         )
+
+        render_color_legend(SEVERITY_LEGEND)
 
         severity_table = pd.DataFrame(
             {
@@ -1285,10 +1421,55 @@ def render_dashboard(
             .value_counts()
         )
 
-        st.bar_chart(
-            status_counts,
-            width="stretch",
+        # One column per status (instead of one shared column) so every
+        # bar can be given its own, consistent color regardless of the
+        # order value_counts() happens to return.
+        status_chart_df = (
+            status_counts
+            .rename("Findings")
+            .to_frame()
+            .T
         )
+
+        status_bar_colors = [
+            STATUS_CHART_COLORS.get(
+                status,
+                STATUS_CHART_FALLBACK_COLOR,
+            )
+            for status in status_chart_df.columns
+        ]
+
+        st.bar_chart(
+            status_chart_df,
+            width="stretch",
+            color=status_bar_colors,
+        )
+
+        # Only show legend entries for statuses that are actually
+        # present in this audit run, so the legend never mentions a
+        # status the user can't currently see on the chart.
+        present_statuses = set(status_chart_df.columns)
+
+        status_legend_items = [
+            item
+            for item in STATUS_LEGEND
+            if item[0] in present_statuses
+        ]
+
+        other_statuses = present_statuses - {
+            item[0] for item in STATUS_LEGEND
+        }
+
+        for other_status in sorted(other_statuses):
+            status_legend_items.append(
+                (
+                    other_status,
+                    STATUS_CHART_FALLBACK_COLOR,
+                    "Other status",
+                )
+            )
+
+        render_color_legend(status_legend_items)
 
     else:
 
