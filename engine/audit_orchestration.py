@@ -14,10 +14,12 @@ SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY required.
 
 This module sits on top of both instead of merging them: it calls
 run_audit() first (unchanged, still Supabase-free), and only then
-attempts to persist the result. If Supabase isn't configured, the
-persistence step is skipped rather than raised -- the pipeline result
-is still returned so callers who don't care about Supabase never see a
-different failure mode than they did before this module existed.
+attempts to persist the result -- the audit run, its findings, and
+the ground-truth evaluation metrics (TP/FP/FN, precision/recall/F1).
+If Supabase isn't configured, the persistence step is skipped rather
+than raised -- the pipeline result is still returned so callers who
+don't care about Supabase never see a different failure mode than
+they did before this module existed.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from typing import Any
 from engine.audit_pipeline import AuditPipelineResult, run_audit
 from engine.persistence import (
     PersistenceNotConfigured,
+    write_audit_evaluation,
     write_audit_run,
     write_findings,
 )
@@ -62,8 +65,9 @@ def run_audit_and_persist(
     client: Any | None = None,
 ) -> OrchestratedAuditResult:
     """
-    Run Stage 1 of the audit pipeline, then persist the audit run and
-    the generated findings to Supabase.
+    Run Stage 1 of the audit pipeline, then persist the audit run,
+    the generated findings, and the ground-truth evaluation metrics
+    to Supabase.
 
     Persistence is best-effort:
 
@@ -84,6 +88,11 @@ def run_audit_and_persist(
     try:
         write_audit_run(pipeline_result.audit_trace, client=client)
         write_findings(pipeline_result.generated_findings, client=client)
+        write_audit_evaluation(
+            pipeline_result.evaluation,
+            audit_run_id=pipeline_result.audit_trace.audit_run_id,
+            client=client,
+        )
     except PersistenceNotConfigured as exc:
         return OrchestratedAuditResult(
             pipeline_result=pipeline_result,

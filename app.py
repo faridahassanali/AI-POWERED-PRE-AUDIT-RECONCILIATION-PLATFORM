@@ -20,12 +20,23 @@ Frontend phase deliverables:
 Data source
 -----------
 Findings and evaluation metrics are loaded from the real
-engine.audit_pipeline.run_audit() result.
+engine.audit_pipeline.run_audit() result, run through
+engine.audit_orchestration.run_audit_and_persist() so the audit run,
+findings, and evaluation metrics are written to Supabase whenever
+it's configured.
 
 No mock findings are used.
 
-Persistence/API integration can replace load_pipeline_result()
-later without changing the UI structure.
+Persistence
+-----------
+Every action that changes state (a fresh audit run, a review
+decision, a generated AI explanation) is written to Supabase
+best-effort: if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY aren't set,
+the write is skipped silently and the UI keeps working exactly as
+before -- persistence is never a hard requirement for using the app.
+
+Backend/API integration can replace load_pipeline_result() later
+without changing the UI structure.
 """
 
 from __future__ import annotations
@@ -36,11 +47,16 @@ import pandas as pd
 import streamlit as st
 
 from engine.ai_explanation_pipeline import generate_ai_explanation_for_finding
-from engine.audit_pipeline import run_audit
+from engine.audit_orchestration import run_audit_and_persist
 from engine.data_loader import DATA_DIR
 from engine.finding_review import (
     confirm_finding,
     reject_finding,
+)
+from engine.persistence import (
+    PersistenceNotConfigured,
+    write_ai_output,
+    write_finding_review,
 )
 from engine.policy_registry import load_policy_registry
 
@@ -192,7 +208,11 @@ def render_color_legend(items: list[tuple[str, str, str]]) -> None:
 @st.cache_resource(show_spinner="Running audit pipeline...")
 def load_pipeline_result():
     """
-    Run the real deterministic audit pipeline once per session.
+    Run the real deterministic audit pipeline once per session,
+    routed through run_audit_and_persist() so the audit run,
+    findings, and evaluation metrics are written to Supabase
+    whenever it's configured (best-effort -- the pipeline result is
+    identical either way).
 
     The same result object supplies:
         - generated findings
@@ -200,7 +220,8 @@ def load_pipeline_result():
         - audit trace
         - report
     """
-    return run_audit()
+    orchestrated = run_audit_and_persist()
+    return orchestrated.pipeline_result
 
 
 @st.cache_resource(show_spinner="Loading policy registry...")
@@ -970,6 +991,8 @@ def render_finding_detail(
                     key=f"confirm_{finding['finding_id']}",
                 ):
 
+                    previous_status = current_status
+
                     try:
 
                         confirm_finding(
@@ -988,6 +1011,17 @@ def render_finding_detail(
 
                     else:
 
+                        try:
+                            write_finding_review(
+                                finding,
+                                previous_status=previous_status,
+                            )
+                        except PersistenceNotConfigured:
+                            # Supabase is optional -- the review
+                            # decision still stands in memory even
+                            # if it can't be persisted.
+                            pass
+
                         st.success(
                             "Finding confirmed."
                         )
@@ -1002,6 +1036,8 @@ def render_finding_detail(
                     width="stretch",
                     key=f"reject_{finding['finding_id']}",
                 ):
+
+                    previous_status = current_status
 
                     try:
 
@@ -1020,6 +1056,14 @@ def render_finding_detail(
                         )
 
                     else:
+
+                        try:
+                            write_finding_review(
+                                finding,
+                                previous_status=previous_status,
+                            )
+                        except PersistenceNotConfigured:
+                            pass
 
                         st.success(
                             "Finding rejected."
@@ -1132,6 +1176,14 @@ def render_finding_detail(
                     )
 
                 if result.succeeded:
+
+                    try:
+                        write_ai_output(finding)
+                    except PersistenceNotConfigured:
+                        # Supabase is optional -- the explanation
+                        # still shows in the UI even if it can't be
+                        # persisted.
+                        pass
 
                     st.success(
                         "AI explanation generated."
@@ -1723,9 +1775,9 @@ def main() -> None:
     st.sidebar.divider()
 
     st.sidebar.caption(
-        "The UI currently uses the real deterministic "
-        "audit pipeline. Persistence/API reads can be "
-        "connected later."
+        "The UI uses the real deterministic audit pipeline. "
+        "Audit runs, findings, reviews, and AI outputs are "
+        "persisted to Supabase automatically when it's configured."
     )
 
     # -----------------------------------------------------
