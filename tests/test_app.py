@@ -301,15 +301,33 @@ def test_sort_findings_unrecognized_key_returns_unchanged(sample_df):
 # Unlike the pure-function tests above, this drives the actual
 # Streamlit widget tree via streamlit.testing.v1.AppTest, since the
 # button lives inside render_finding_detail() (a rendering function).
-# app.generate_ai_explanation_for_finding is monkeypatched with a
-# fake so this never makes a real Groq/Gemini call or needs API keys.
+#
+# app.py now loads its findings through
+# engine.audit_orchestration.run_audit_and_persist() (not
+# engine.audit_pipeline.run_audit() directly), so this patches
+# run_audit_and_persist itself rather than the underlying run_audit.
+# Patching engine.audit_pipeline.run_audit would NOT work here:
+# engine/audit_orchestration.py does `from engine.audit_pipeline
+# import run_audit` at import time, which binds a fixed reference in
+# audit_orchestration's own namespace -- monkeypatching the source
+# module's attribute afterwards does not change that already-bound
+# name. Patching run_audit_and_persist directly sidesteps that
+# entirely.
+#
+# app.generate_ai_explanation_for_finding is also monkeypatched with
+# a fake so this never makes a real Groq/Gemini call or needs API
+# keys. write_finding_review / write_ai_output are NOT patched --
+# with no SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY set in the test
+# environment they naturally raise PersistenceNotConfigured, which
+# app.py already catches and ignores, so persistence stays a no-op
+# here without any extra patching.
 
 def test_generate_button_appears_for_confirmed_finding_without_explanation(monkeypatch):
 
     import types
 
+    import engine.audit_orchestration as audit_orchestration_module
     import engine.ai_explanation_pipeline as pipeline_module
-    import engine.audit_pipeline as audit_pipeline_module
     import engine.policy_registry as policy_registry_module
 
     confirmed_finding = {
@@ -333,6 +351,20 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(monke
         "ai_recommendation": None,
     }
 
+    fake_pipeline_result = types.SimpleNamespace(
+        generated_findings=[confirmed_finding],
+        evaluation={},
+    )
+
+    fake_orchestrated_result = types.SimpleNamespace(
+        pipeline_result=fake_pipeline_result,
+        persistence=types.SimpleNamespace(
+            attempted=False,
+            persisted=False,
+            reason=None,
+        ),
+    )
+
     # app.py execs fresh inside AppTest's own sandbox -- patching an
     # already-imported `app` module object does nothing there.
     # Patching the SOURCE modules works, because app.py's
@@ -340,12 +372,9 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(monke
     # objects' current attributes on every fresh exec, and Python's
     # module cache (sys.modules) is shared process-wide.
     monkeypatch.setattr(
-        audit_pipeline_module,
-        "run_audit",
-        lambda: types.SimpleNamespace(
-            generated_findings=[confirmed_finding],
-            evaluation={},
-        ),
+        audit_orchestration_module,
+        "run_audit_and_persist",
+        lambda *args, **kwargs: fake_orchestrated_result,
     )
     monkeypatch.setattr(
         policy_registry_module,
