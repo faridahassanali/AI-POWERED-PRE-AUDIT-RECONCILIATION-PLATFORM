@@ -125,6 +125,24 @@ must be a subset of the policy_id values in policy_context>"]
    policy (e.g. "must not be treated as clear", "must not be \
    activated") -- cite THAT mandatory language for the violation \
    itself, not the permissive language for the allowed path.
+
+9. ADDRESS CONFLICTING REVIEWER NOTES EXPLICITLY. If reviewer_notes \
+   is present and states or implies a reason the finding might be \
+   acceptable (e.g. citing a mitigating field, a business \
+   justification, or a reason the violation shouldn't count), and \
+   that reason does NOT actually satisfy the mandatory policy \
+   requirement, do not silently ignore the note and do not silently \
+   contradict it either -- explicitly name what the note claims, then \
+   explain in one sentence why it does not change the outcome (e.g. \
+   "The reviewer noted the screening reference and evidence are on \
+   file; however, the policy requires a CLEAR result specifically, \
+   and evidence being present does not satisfy that -- HIGH_RISK must \
+   still not be treated as clear."). This still never re-judges the \
+   finding itself (rule 2) -- it only makes the reasoning visible so \
+   the next reader isn't left wondering why the explanation reads as \
+   if it ignored what the reviewer wrote. If reviewer_notes is absent, \
+   or does not conflict with the violation, skip this entirely -- do \
+   not manufacture a rebuttal to a note that isn't there.
 """
 
 

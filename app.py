@@ -29,11 +29,18 @@ No mock findings are used.
 
 Persistence
 -----------
-Every action that changes state (a fresh audit run, a review
-decision, a generated AI explanation) is written to Supabase
-best-effort: if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY aren't set,
-the write is skipped silently and the UI keeps working exactly as
-before -- persistence is never a hard requirement for using the app.
+Every action that changes state is written to Supabase best-effort:
+if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY aren't set, the write is
+skipped silently and the UI keeps working exactly as before —
+persistence is never a hard requirement for using the app.
+
+    - A fresh audit run           -> audit_runs, findings,
+                                      audit_evaluations
+    - A Confirm/Reject decision   -> finding_reviews, and (for
+                                      Confirm only) an immediate
+                                      deterministic Stage 2
+                                      explanation -> finding_explanations
+    - A generated AI explanation  -> ai_outputs
 
 Backend/API integration can replace load_pipeline_result() later
 without changing the UI structure.
@@ -49,6 +56,7 @@ import streamlit as st
 from engine.ai_explanation_pipeline import generate_ai_explanation_for_finding
 from engine.audit_orchestration import run_audit_and_persist
 from engine.data_loader import DATA_DIR
+from engine.finding_explainer import explain_finding
 from engine.finding_review import (
     confirm_finding,
     reject_finding,
@@ -56,6 +64,7 @@ from engine.finding_review import (
 from engine.persistence import (
     PersistenceNotConfigured,
     write_ai_output,
+    write_finding_explanation,
     write_finding_review,
 )
 from engine.policy_registry import load_policy_registry
@@ -1022,6 +1031,32 @@ def render_finding_detail(
                             # if it can't be persisted.
                             pass
 
+                        # Immediately generate and persist the
+                        # deterministic Stage 2 explanation -- no
+                        # LLM, cannot hallucinate, always available
+                        # the moment a finding is confirmed. This is
+                        # separate from the AI explanation (Stage 3,
+                        # generated on-demand below via the
+                        # "Generate AI explanation" button).
+                        try:
+                            deterministic_explanation = explain_finding(
+                                finding
+                            )
+
+                            try:
+                                write_finding_explanation(
+                                    deterministic_explanation
+                                )
+                            except PersistenceNotConfigured:
+                                pass
+
+                        except ValueError:
+                            # explain_finding() only raises if the
+                            # finding isn't CONFIRMED -- unreachable
+                            # here since confirm_finding() just set
+                            # it, but guarded rather than assumed.
+                            pass
+
                         st.success(
                             "Finding confirmed."
                         )
@@ -1776,8 +1811,9 @@ def main() -> None:
 
     st.sidebar.caption(
         "The UI uses the real deterministic audit pipeline. "
-        "Audit runs, findings, reviews, and AI outputs are "
-        "persisted to Supabase automatically when it's configured."
+        "Audit runs, findings, reviews, deterministic "
+        "explanations, and AI outputs are persisted to "
+        "Supabase automatically when it's configured."
     )
 
     # -----------------------------------------------------

@@ -3,11 +3,12 @@ Supabase Persistence Layer.
 
 Functions to write pipeline artifacts to Supabase:
 
-    - write_audit_run()        -> public.audit_runs
-    - write_findings()         -> public.findings
-    - write_finding_review()   -> public.finding_reviews
-    - write_audit_evaluation() -> public.audit_evaluations
-    - write_ai_output()        -> public.ai_outputs
+    - write_audit_run()          -> public.audit_runs
+    - write_findings()           -> public.findings
+    - write_finding_review()     -> public.finding_reviews
+    - write_audit_evaluation()   -> public.audit_evaluations
+    - write_finding_explanation()-> public.finding_explanations
+    - write_ai_output()          -> public.ai_outputs
 
 Design principle preserved
 ---------------------------
@@ -136,6 +137,37 @@ def _finding_review_row(
         "new_status": finding["finding_status"],
         "reviewed_by": finding["reviewed_by"],
         "reviewer_notes": finding.get("reviewer_notes"),
+    }
+
+
+def _finding_explanation_row(
+    explanation: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build the public.finding_explanations row from the output of
+    engine.finding_explainer.explain_finding() (the deterministic,
+    template-based Stage 2 explanation -- NOT the LLM explanation,
+    which goes to public.ai_outputs via _ai_output_row() instead).
+
+    explain_finding() only accepts CONFIRMED findings, so
+    finding_status here will always be "CONFIRMED" -- included as-is
+    rather than hardcoded, so the row always reflects exactly what
+    the explainer actually saw.
+    """
+    return {
+        "finding_id": explanation["finding_id"],
+        "audit_run_id": explanation["audit_run_id"],
+        "control_id": explanation["control_id"],
+        "customer_id": explanation.get("customer_id"),
+        "severity": explanation["severity"],
+        "assessment_status": explanation["assessment_status"],
+        "finding_status": explanation["finding_status"],
+        "summary": explanation["summary"],
+        "expected_condition": explanation["expected_condition"],
+        "observed_condition": explanation["observed_condition"],
+        "evidence": explanation.get("evidence", {}),
+        "policy_references": explanation.get("policy_references", []),
+        "review_action": explanation.get("review_action"),
     }
 
 
@@ -314,6 +346,39 @@ def write_audit_evaluation(
         .execute()
     )
 
+    return response.data
+
+
+def write_finding_explanation(
+    explanation: dict[str, Any],
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Upsert one row into public.finding_explanations.
+
+    Call this with the output of
+    engine.finding_explainer.explain_finding() -- the deterministic,
+    template-based Stage 2 explanation (no LLM, cannot hallucinate
+    because it only reformats an already-CONFIRMED finding).
+
+    Upsert on finding_id (matches the table's `unique (finding_id)`
+    constraint) so this is safe to call again if the explanation is
+    ever regenerated for the same finding.
+
+    This is a DIFFERENT artifact from public.ai_outputs -- the LLM's
+    grounded narrative explanation/recommendation. Both may exist for
+    the same CONFIRMED finding; they answer different questions
+    (deterministic audit trail vs. AI-generated narrative).
+    """
+
+    client = client or get_supabase_client()
+    row = _finding_explanation_row(explanation)
+
+    response = (
+        client.table("finding_explanations")
+        .upsert(row, on_conflict="finding_id")
+        .execute()
+    )
     return response.data
 
 
