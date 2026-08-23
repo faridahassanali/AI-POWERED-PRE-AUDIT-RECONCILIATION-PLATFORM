@@ -33,11 +33,14 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from engine.ai_explanation_pipeline import generate_ai_explanation_for_finding
 from engine.audit_pipeline import run_audit
+from engine.data_loader import DATA_DIR
 from engine.finding_review import (
     confirm_finding,
     reject_finding,
 )
+from engine.policy_registry import load_policy_registry
 
 
 # =========================================================
@@ -67,6 +70,16 @@ def load_pipeline_result():
         - report
     """
     return run_audit()
+
+
+@st.cache_resource(show_spinner="Loading policy registry...")
+def load_registry():
+    """
+    Load the Policy Registry once per session -- required by
+    generate_ai_explanation_for_finding() to resolve a finding's
+    policy_context via the RAG bridge before calling the LLM.
+    """
+    return load_policy_registry(DATA_DIR)
 
 
 def get_finding_by_id(
@@ -963,6 +976,44 @@ def render_finding_detail(
                 st.write(
                     ai_recommendation
                 )
+
+        elif finding.get("finding_status") == "CONFIRMED":
+
+            st.caption(
+                "Not yet generated for this finding."
+            )
+
+            if st.button(
+                "🤖 Generate AI explanation",
+                width="stretch",
+                key=f"generate_ai_{finding['finding_id']}",
+            ):
+
+                registry = load_registry()
+
+                with st.spinner(
+                    "Retrieving policy context and calling the LLM..."
+                ):
+
+                    result = generate_ai_explanation_for_finding(
+                        finding,
+                        registry=registry,
+                    )
+
+                if result.succeeded:
+
+                    st.success(
+                        "AI explanation generated."
+                    )
+
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        f"Could not generate an AI explanation: "
+                        f"{result.error}"
+                    )
 
         else:
 

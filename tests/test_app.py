@@ -15,6 +15,7 @@ required for this MVP.
 
 import pandas as pd
 import pytest
+from streamlit.testing.v1 import AppTest
 
 from app import filter_findings, get_finding_by_id, get_nav_state, sort_findings
 
@@ -291,3 +292,96 @@ def test_sort_findings_by_customer_puts_null_last(sample_df):
 def test_sort_findings_unrecognized_key_returns_unchanged(sample_df):
     result = sort_findings(sample_df, "Not A Real Option")
     assert result["finding_id"].tolist() == sample_df["finding_id"].tolist()
+
+
+# =========================================================
+# GENERATE AI EXPLANATION BUTTON (AppTest smoke test)
+# =========================================================
+#
+# Unlike the pure-function tests above, this drives the actual
+# Streamlit widget tree via streamlit.testing.v1.AppTest, since the
+# button lives inside render_finding_detail() (a rendering function).
+# app.generate_ai_explanation_for_finding is monkeypatched with a
+# fake so this never makes a real Groq/Gemini call or needs API keys.
+
+def test_generate_button_appears_for_confirmed_finding_without_explanation(monkeypatch):
+
+    import types
+
+    import engine.ai_explanation_pipeline as pipeline_module
+    import engine.audit_pipeline as audit_pipeline_module
+    import engine.policy_registry as policy_registry_module
+
+    confirmed_finding = {
+        "finding_id": "F-BTN-0001",
+        "audit_run_id": "RUN-BTN",
+        "control_id": "SCREENING_001",
+        "customer_id": "CUST999",
+        "severity": "HIGH",
+        "assessment_status": "FAIL",
+        "finding_status": "CONFIRMED",
+        "expected": "Customer must have a CLEAR screening result.",
+        "actual": "Screening result is PENDING.",
+        "evidence": {"customer_id": "CUST999", "screening_status": "PENDING"},
+        "policy_references": [
+            {"policy_id": "SCREENING-POLICY-001", "version": "1.0", "section": "Requirements"}
+        ],
+        "reviewed_by": "tester",
+        "review_timestamp": "2026-08-23T00:00:00Z",
+        "reviewer_notes": None,
+        "ai_explanation": None,
+        "ai_recommendation": None,
+    }
+
+    # app.py execs fresh inside AppTest's own sandbox -- patching an
+    # already-imported `app` module object does nothing there.
+    # Patching the SOURCE modules works, because app.py's
+    # `from x import y` statements re-resolve against these module
+    # objects' current attributes on every fresh exec, and Python's
+    # module cache (sys.modules) is shared process-wide.
+    monkeypatch.setattr(
+        audit_pipeline_module,
+        "run_audit",
+        lambda: types.SimpleNamespace(
+            generated_findings=[confirmed_finding],
+            evaluation={},
+        ),
+    )
+    monkeypatch.setattr(
+        policy_registry_module,
+        "load_policy_registry",
+        lambda data_dir: object(),
+    )
+
+    def _fake_generate(finding, registry, primary=None, fallback=None):
+        finding["ai_explanation"] = "Fake grounded explanation."
+        finding["ai_recommendation"] = "Fake recommendation."
+        return types.SimpleNamespace(
+            succeeded=True,
+            error=None,
+            finding_id=finding["finding_id"],
+        )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "generate_ai_explanation_for_finding",
+        _fake_generate,
+    )
+
+    at = AppTest.from_file("../app.py")
+    at.session_state["view"] = "detail"
+    at.session_state["selected_finding_id"] = "F-BTN-0001"
+    at.run()
+
+    assert not at.exception
+
+    generate_buttons = [
+        b for b in at.button if "Generate AI explanation" in b.label
+    ]
+    assert len(generate_buttons) == 1
+
+    generate_buttons[0].click().run()
+
+    assert not at.exception
+    assert confirmed_finding["ai_explanation"] == "Fake grounded explanation."
+    assert confirmed_finding["ai_recommendation"] == "Fake recommendation."
