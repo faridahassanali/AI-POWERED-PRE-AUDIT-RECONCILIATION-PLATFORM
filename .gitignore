@@ -27,3 +27,6 @@ node_modules/
 # Qdrant local storage (generated data, not source)
 .qdrant_storage/
 RAG/.qdrant_storage/
+
+# LLM/RAG quality evaluation reports (generated, not source)
+evaluation_reports/

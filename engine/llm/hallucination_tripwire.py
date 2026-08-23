@@ -33,13 +33,16 @@ positives low:
     2. STATUS VOCABULARY CONTRADICTION
        The finding schema defines a closed vocabulary for severity,
        assessment_status, and the categorical evidence fields (see
-       engine.normalization.CATEGORICAL_FIELDS). If the explanation
-       uses one of these known status words (e.g. "CLEAR", "DORMANT",
-       "HIGH_RISK") and that word does NOT match the actual value
-       present in the finding's own fields, that's a direct
-       contradiction of a pre-verified fact -- e.g. the model says
-       "the screening status was CLEAR" while evidence says
-       screening_status: "PENDING".
+       engine.normalization.CATEGORICAL_FIELDS). If ai_explanation
+       (NOT ai_recommendation -- see check_for_hallucinations()'s
+       docstring) uses one of these known status words (e.g. "CLEAR",
+       "DORMANT", "HIGH_RISK") and that word does NOT match any of
+       the actual value(s) present in the finding's own fields
+       (including values nested inside dict/list evidence, e.g.
+       RECON_001's {'SCREENING_STATUS': {'SOURCE': ..., 'REPORT':
+       ...}}), that's a direct contradiction of a pre-verified fact
+       -- e.g. the model says "the screening status was CLEAR" while
+       evidence says screening_status: "PENDING".
 
 Deliberately NOT attempted: general open-ended fact-checking of
 arbitrary prose. That would need real NLP/entailment checking and
@@ -74,17 +77,29 @@ KNOWN_STATUS_VOCABULARY = {
     # Task B's validate_no_finding_mutation() already guards
     # finding_status separately and correctly.
     #
+    # NOTE: "ACTIVE" is deliberately EXCLUDED too, for the same
+    # reason -- it's an ordinary English word ("active monitoring",
+    # "no active exception") far more often than it's a status claim,
+    # and real evaluation runs against live findings (see
+    # engine.llm_evaluation reports) showed it producing false
+    # positives on RISK_001 explanations that never claimed the
+    # account/wallet was in an ACTIVE state at all.
+    #
     # common categorical evidence values seen across controls.py
     "CLEAR", "PENDING", "NO_MATCH", "HIGH_RISK",
-    "ACTIVE", "DORMANT", "OPENED", "NOT_OPENED", "COMPLETED",
+    "DORMANT", "OPENED", "NOT_OPENED", "COMPLETED",
 }
 
 # Words that collide with the closed vocabulary above but are common
-# English words too ("HIGH" alone, "ACTIVE" alone) -- require these to
-# appear as a closer status-like phrase to reduce false positives is
-# impractical for a simple tripwire, so instead we only ever compare
-# them against the ACTUAL values present in the finding; a word that
+# English words too ("HIGH" alone) -- require these to appear as a
+# closer status-like phrase to reduce false positives is impractical
+# for a simple tripwire, so instead we only ever compare them against
+# the ACTUAL values present in the finding (including its own
+# expected/actual text -- see _evidence_status_values()); a word that
 # happens to also be the correct value is never flagged (see below).
+# Words that turned out to collide too often even with that
+# safeguard (e.g. "ACTIVE") were removed from the vocabulary above
+# entirely rather than special-cased.
 
 
 class HallucinationDetectedError(LLMError):
@@ -111,6 +126,37 @@ NUMBER_PATTERN = re.compile(
     """,
     re.VERBOSE,
 )
+
+
+def _flatten_leaf_values(value: Any) -> list[str]:
+    """
+    Recursively collect every leaf value out of a possibly-nested
+    structure (dict / list / tuple), as strings.
+
+    Some controls (e.g. RECON_001) produce nested evidence like
+    {'SCREENING_STATUS': {'SOURCE': 'HIGH_RISK', 'REPORT': 'CLEAR'}}
+    -- both 'HIGH_RISK' and 'CLEAR' are genuinely part of the
+    evidence the model was given, but without flattening, the only
+    thing added to the grounded set was the single stringified blob
+    "{'SCREENING_STATUS': {'SOURCE': 'HIGH_RISK', 'REPORT': 'CLEAR'}}",
+    which no individual word can ever equal via exact match -- a
+    guaranteed false positive on every reconciliation finding whose
+    explanation correctly names the mismatched values.
+    """
+
+    if isinstance(value, dict):
+        leaves: list[str] = []
+        for v in value.values():
+            leaves.extend(_flatten_leaf_values(v))
+        return leaves
+
+    if isinstance(value, (list, tuple, set)):
+        leaves = []
+        for v in value:
+            leaves.extend(_flatten_leaf_values(v))
+        return leaves
+
+    return [str(value)]
 
 
 def _collect_grounded_text(ai_input: dict[str, Any]) -> str:
@@ -145,11 +191,25 @@ def _collect_grounded_text(ai_input: dict[str, Any]) -> str:
 
 def _evidence_status_values(ai_input: dict[str, Any]) -> set[str]:
     """
-    The ACTUAL status-like values present in this finding: evidence
-    values, severity, assessment_status -- uppercased, since the
-    vocabulary itself is uppercase. Any KNOWN_STATUS_VOCABULARY word
-    the model uses that matches one of THESE is correct by
-    definition, not a contradiction.
+    The ACTUAL status-like values this finding legitimately supports:
+    evidence values (flattened out of any nested dict/list
+    structure), severity, assessment_status, AND any status word
+    appearing in THIS finding's own expected/actual text --
+    uppercased, since the vocabulary itself is uppercase.
+
+    expected/actual are deterministically generated per-finding (see
+    engine.controls) and routinely state the REQUIRED value using
+    the same closed vocabulary, e.g. DORMANT_001's expected text is
+    "Dormant opened accounts must have completed dormant handling."
+    -- a model correctly explaining "status is PENDING, not
+    COMPLETED as required" is citing that requirement accurately, not
+    inventing it. Deliberately NOT extended to policy_context: policy
+    text enumerates the full space of valid/invalid categorical
+    values generically (e.g. the screening policy literally lists
+    CLEAR, HIGH_RISK, PENDING, NO_MATCH together), so including it
+    here would let a genuinely wrong claim about the CURRENT state
+    hide behind the policy having mentioned that word somewhere --
+    defeating the check's purpose.
     """
 
     values: set[str] = {
@@ -160,7 +220,17 @@ def _evidence_status_values(ai_input: dict[str, Any]) -> set[str]:
     evidence = ai_input.get("evidence", {})
     if isinstance(evidence, dict):
         for value in evidence.values():
-            values.add(str(value).upper())
+            for leaf in _flatten_leaf_values(value):
+                values.add(leaf.upper())
+
+    expected_and_actual_text = (
+        str(ai_input.get("expected", "")) + " " + str(ai_input.get("actual", ""))
+    ).upper()
+
+    for word in KNOWN_STATUS_VOCABULARY:
+        pattern = r"\b" + re.escape(word) + r"\b"
+        if re.search(pattern, expected_and_actual_text):
+            values.add(word)
 
     return values
 
@@ -207,7 +277,10 @@ def check_for_status_contradiction(
 ) -> list[str]:
     """
     Flag any KNOWN_STATUS_VOCABULARY word used in `text` that
-    contradicts the finding's actual status values.
+    contradicts the finding's actual status values (see
+    _evidence_status_values() for exactly what counts as grounded --
+    evidence, severity, assessment_status, and this finding's own
+    expected/actual text; deliberately NOT policy_context).
     """
 
     errors: list[str] = []
@@ -239,21 +312,33 @@ def check_for_status_contradiction(
 
 def check_for_hallucinations(ai_output: dict[str, Any], ai_input: dict[str, Any]) -> list[str]:
     """
-    Run both tripwire checks against the combined explanation +
-    recommendation text. Returns a list of human-readable warnings;
-    an empty list means nothing suspicious was found.
+    Run both tripwire checks. Returns a list of human-readable
+    warnings; an empty list means nothing suspicious was found.
+
+    The two checks intentionally look at different text:
+
+    - Numeric fabrication runs against explanation + recommendation
+      combined -- a specific invented figure is suspect no matter
+      which field it shows up in.
+
+    - Status contradiction runs against ai_explanation ONLY. A
+      recommendation's entire job is to propose a DIFFERENT state
+      than the one currently on record (e.g. "reactivate the dormant
+      account" legitimately uses ACTIVE while the finding's actual
+      account_status is DORMANT -- that is the recommendation
+      working correctly, not a hallucination). Checking
+      ai_explanation alone still catches the failure mode this
+      exists for: the model misstating what the CURRENT evidence
+      says.
     """
 
-    text = " ".join(
-        [
-            str(ai_output.get("ai_explanation", "")),
-            str(ai_output.get("ai_recommendation", "")),
-        ]
-    )
+    explanation_text = str(ai_output.get("ai_explanation", ""))
+    recommendation_text = str(ai_output.get("ai_recommendation", ""))
+    combined_text = " ".join([explanation_text, recommendation_text])
 
     errors: list[str] = []
-    errors += check_for_numeric_fabrication(text, ai_input)
-    errors += check_for_status_contradiction(text, ai_input)
+    errors += check_for_numeric_fabrication(combined_text, ai_input)
+    errors += check_for_status_contradiction(explanation_text, ai_input)
 
     return errors
 

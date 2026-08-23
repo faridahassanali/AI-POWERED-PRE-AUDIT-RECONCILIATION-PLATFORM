@@ -122,9 +122,16 @@ class GroqProvider:
         # -----------------------------------------------------------
 
         if response.status_code == 429:
-            retry_after = response.headers.get("retry-after", "unknown")
+            retry_after_header = response.headers.get("retry-after")
+            retry_after: float | None = None
+            if retry_after_header is not None:
+                try:
+                    retry_after = float(retry_after_header)
+                except ValueError:
+                    retry_after = None
             raise LLMTransientError(
-                f"Groq rate limit hit (retry-after: {retry_after})."
+                f"Groq rate limit hit (retry-after: {retry_after_header}).",
+                retry_after=retry_after,
             )
 
         if response.status_code >= 500:

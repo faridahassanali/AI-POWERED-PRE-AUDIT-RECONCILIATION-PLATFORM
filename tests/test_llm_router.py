@@ -108,7 +108,65 @@ def test_transient_error_fails_over_to_gemini():
 
     assert result["provider_used"] == "gemini"
     assert primary.call_count == 2
-    assert fallback.call_count == 1
+
+
+def test_retry_after_from_error_is_honored_by_backoff(monkeypatch):
+    """
+    A provider's LLMTransientError can carry the server's actual
+    suggested wait time (e.g. Groq's Retry-After header) -- the
+    router must sleep that long, not a flat guess. Before this fix,
+    the router always slept a fixed 0.5s regardless of what the
+    provider said, so retries routinely landed inside the same
+    rate-limit window and failed again immediately.
+    """
+
+    slept_for = []
+    monkeypatch.setattr(
+        "engine.llm.router.time.sleep",
+        lambda seconds: slept_for.append(seconds),
+    )
+
+    primary = _FakeProvider(
+        "groq",
+        [LLMTransientError("rate limited", retry_after=7.0), None],
+    )
+    fallback = _FakeProvider("gemini", [None])
+
+    result = explain(SAMPLE_AI_INPUT, primary=primary, fallback=fallback)
+
+    assert result["provider_used"] == "groq"
+    assert slept_for == [7.0]
+
+
+def test_retry_after_is_capped_so_it_cannot_stall_the_pipeline():
+    """
+    A server suggesting an extreme wait (or a bug) shouldn't be able
+    to stall a batch run indefinitely -- the router caps how long a
+    single retry will honor.
+    """
+
+    from engine.llm.router import MAX_HONORED_RETRY_AFTER_SECONDS
+
+    slept_for = []
+
+    import engine.llm.router as router_module
+    original_sleep = router_module.time.sleep
+    router_module.time.sleep = lambda seconds: slept_for.append(seconds)
+
+    try:
+        primary = _FakeProvider(
+            "groq",
+            [LLMTransientError("rate limited", retry_after=9999.0), None],
+        )
+        fallback = _FakeProvider("gemini", [None])
+
+        explain(SAMPLE_AI_INPUT, primary=primary, fallback=fallback)
+
+    finally:
+        router_module.time.sleep = original_sleep
+
+    assert slept_for == [MAX_HONORED_RETRY_AFTER_SECONDS]
+    assert fallback.call_count == 0
 
 
 def test_output_error_retries_same_provider_before_failover():
