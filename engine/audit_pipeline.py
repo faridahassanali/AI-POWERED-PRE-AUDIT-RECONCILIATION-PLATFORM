@@ -328,16 +328,8 @@ def run_audit(
     # 14. PRE-AI EXPLANATIONS
     # =========================================================
 
-    # IMPORTANT:
-    #
     # All generated findings are still in REVIEW status.
-    #
     # Therefore, NO explanations are generated here.
-    #
-    # This is the human review gate.
-    #
-    # The deterministic audit stage must finish before
-    # any explanation or future AI processing occurs.
 
     explanations: list[dict[str, Any]] = []
 

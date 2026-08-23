@@ -25,7 +25,7 @@ from RAG.chunker import chunk_all_policies, parse_policy_file
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
-CONTROLS_PATH = DATA_DIR / "controls.json"
+CONTROLS_PATH = DATA_DIR  / "controls.json"
 
 
 def _qdrant_is_reachable(host: str = "localhost", port: int = 6333) -> bool:
