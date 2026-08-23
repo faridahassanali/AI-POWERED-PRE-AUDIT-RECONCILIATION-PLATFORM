@@ -84,12 +84,17 @@ def build_audit_output(
     """
     Build the canonical audit output.
 
-    Findings may be returned without explanations during
-    the pre-AI stage while they are awaiting human review.
+    Findings may exist without explanations.
 
-    If explanations are provided, there must be exactly one
-    explanation for every finding and each explanation must
-    belong to the corresponding finding.
+    Only findings that reached the AI stage will have
+    an explanation. Therefore, explanations do not need
+    to exist for every finding.
+
+    Explanations are matched to findings using finding_id,
+    not list position.
+
+    Every supplied explanation must correspond to an
+    existing finding in the same audit run.
 
     This function does not modify the original findings.
     """
@@ -97,55 +102,131 @@ def build_audit_output(
     audit_run_id = audit_trace.audit_run_id
 
     # ---------------------------------------------------------
-    # PRE-AI STAGE
-    # ---------------------------------------------------------
-    # No explanations have been generated yet.
-    #
-    # Every finding is still available for human review.
-    # Therefore, an empty explanation list is valid.
+    # NORMALIZE EXPLANATIONS
     # ---------------------------------------------------------
 
     if explanations is None:
         explanations = []
 
-    if len(explanations) not in {0, len(findings)}:
-        raise ValueError(
-            "Explanations must either be empty or contain "
-            "exactly one explanation for every finding."
-        )
-
-    paired_findings: list[AuditFindingOutput] = []
-
     # ---------------------------------------------------------
-    # BUILD OUTPUT
+    # BUILD FINDING INDEX
+    # ---------------------------------------------------------
+    # We use finding_id as the canonical identity between
+    # findings and explanations.
     # ---------------------------------------------------------
 
-    for index, finding in enumerate(findings):
+    finding_by_id: dict[str, dict[str, Any]] = {}
 
-        # Every finding must belong to this audit run.
+    for finding in findings:
+
+        finding_id = finding.get("finding_id")
+
+        if not finding_id:
+            raise ValueError(
+                "Every finding must contain finding_id."
+            )
+
+        if finding_id in finding_by_id:
+            raise ValueError(
+                f"Duplicate finding for finding_id: "
+                f"{finding_id}"
+            )
+
         if finding.get("audit_run_id") != audit_run_id:
             raise ValueError(
                 "Finding audit_run_id does not match "
                 "the audit trace."
             )
 
-        # No explanation yet.
-        explanation = None
+        finding_by_id[finding_id] = finding
 
-        # If explanations exist, match them by position.
-        if explanations:
-            explanation = explanations[index]
+    # ---------------------------------------------------------
+    # BUILD EXPLANATION INDEX
+    # ---------------------------------------------------------
+    # AI explanations may exist only for CONFIRMED findings.
+    #
+    # Example:
+    #
+    # findings:
+    #   F001 -> CONFIRMED
+    #   F002 -> REJECTED
+    #   F003 -> CONFIRMED
+    #
+    # explanations:
+    #   F001
+    #   F003
+    #
+    # Therefore, explanations are matched by finding_id.
+    # ---------------------------------------------------------
 
-            if explanation.get("audit_run_id") != audit_run_id:
-                raise ValueError(
-                    "Explanation audit_run_id does not match "
-                    "the audit trace."
-                )
+    explanation_by_finding_id: dict[str, dict[str, Any]] = {}
+
+    for explanation in explanations:
+
+        finding_id = explanation.get("finding_id")
+
+        if not finding_id:
+            raise ValueError(
+                "Every explanation must contain finding_id."
+            )
+
+        if finding_id in explanation_by_finding_id:
+            raise ValueError(
+                f"Duplicate explanation for finding_id: "
+                f"{finding_id}"
+            )
+
+        if explanation.get("audit_run_id") != audit_run_id:
+            raise ValueError(
+                "Explanation audit_run_id does not match "
+                "the audit trace."
+            )
+
+        # -----------------------------------------------------
+        # IMPORTANT:
+        # Every explanation must belong to an actual finding.
+        # -----------------------------------------------------
+
+        if finding_id not in finding_by_id:
+            raise ValueError(
+                f"Explanation references unknown "
+                f"finding_id: {finding_id}"
+            )
+
+        explanation_by_finding_id[finding_id] = explanation
+
+    # ---------------------------------------------------------
+    # BUILD OUTPUT
+    # ---------------------------------------------------------
+
+    paired_findings: list[AuditFindingOutput] = []
+
+    for finding in findings:
+
+        finding_id = finding["finding_id"]
+
+        # -----------------------------------------------------
+        # MATCH EXPLANATION BY FINDING ID
+        # -----------------------------------------------------
+
+        explanation = explanation_by_finding_id.get(
+            finding_id
+        )
+
+        # -----------------------------------------------------
+        # VALIDATE MATCHED EXPLANATION
+        # -----------------------------------------------------
+
+        if explanation is not None:
 
             _validate_finding_explanation_pair(
                 finding,
                 explanation,
             )
+
+        # -----------------------------------------------------
+        # BUILD FINDING OUTPUT
+        # -----------------------------------------------------
 
         paired_findings.append(
             AuditFindingOutput(
