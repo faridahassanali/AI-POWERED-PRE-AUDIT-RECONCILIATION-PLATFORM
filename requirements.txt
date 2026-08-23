@@ -10,5 +10,5 @@ qdrant-client>=1.9
 sentence-transformers>=2.2
 requests>=2.31
 python-dotenv>=1.0
-
+streamlit>=1.60
 supabase>=2.0
