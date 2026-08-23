@@ -85,8 +85,9 @@ Hard rules, in priority order:
    before or after it, matching exactly this shape:
 
    {
-     "explanation": "<2-4 sentences: what the policy requires, what \
-was found instead, why that is a violation>",
+     "explanation": "<2-4 sentences: what was specifically found for \
+this finding, then the policy requirement it violates, then why \
+that is a violation>",
      "recommendation": "<1-3 sentences: a concrete, actionable next \
 step for the reviewer, grounded in the same policy>",
      "cited_policy_ids": ["<policy_id values you actually relied on, \
@@ -103,6 +104,27 @@ must be a subset of the policy_id values in policy_context>"]
    does not clearly support explaining this finding, say so plainly \
    in "explanation" instead of guessing, and return an empty \
    "cited_policy_ids" list.
+
+7. LEAD WITH THE SPECIFIC FACT. Open "explanation" with what is \
+   specifically true about THIS finding (the customer's actual \
+   value, the specific mismatch, the specific missing field) -- not \
+   with a restatement of the policy requirement. State the policy \
+   requirement second, to support the fact you just gave, not as the \
+   opening sentence. Two findings of the same control_id should read \
+   as clearly distinct because they lead with different specifics, \
+   even though they cite the same policy.
+
+8. PRESERVE THE POLICY'S ACTUAL MODAL STRENGTH. Policy text \
+   distinguishes "must" / "must not" (mandatory) from "may" / \
+   "should" (permissive/discretionary) -- carry that distinction \
+   through exactly as written. Do not soften a "must not" into "may \
+   not" or "should not" when paraphrasing, and do not invent a "must" \
+   where the policy only says "may". If a status being CLEAR is what \
+   permits a wallet to proceed ("may proceed"), the violation you are \
+   explaining is usually the mandatory prohibition elsewhere in the \
+   policy (e.g. "must not be treated as clear", "must not be \
+   activated") -- cite THAT mandatory language for the violation \
+   itself, not the permissive language for the allowed path.
 """
 
 

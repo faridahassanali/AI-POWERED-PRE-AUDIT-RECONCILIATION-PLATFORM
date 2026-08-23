@@ -44,9 +44,18 @@ class LLMTransientError(LLMError):
     A retryable / fail-over-able problem: timeout, rate limit (429),
     5xx, connection reset, etc.
 
+    retry_after: seconds the server told us to wait, if it gave one
+    (e.g. Groq's 429 Retry-After header). Optional -- providers that
+    don't have this information just leave it None, and the router
+    falls back to its own default backoff.
+
     The router treats this as "try again, then try the other
     provider" -- never a silent skip.
     """
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class LLMConfigError(LLMError):

@@ -49,6 +49,7 @@ from engine.llm.groq_provider import GroqProvider
 logger = logging.getLogger(__name__)
 
 RETRY_BACKOFF_SECONDS = 0.5
+MAX_HONORED_RETRY_AFTER_SECONDS = 10.0
 
 
 class LLMAllProvidersFailedError(LLMError):
@@ -147,7 +148,12 @@ def explain(
             primary_error,
         )
 
-        time.sleep(RETRY_BACKOFF_SECONDS)
+        backoff_seconds = RETRY_BACKOFF_SECONDS
+        retry_after = getattr(primary_error, "retry_after", None)
+        if retry_after is not None:
+            backoff_seconds = min(retry_after, MAX_HONORED_RETRY_AFTER_SECONDS)
+
+        time.sleep(backoff_seconds)
 
         try:
             result = _attempt(primary, ai_input, retry_on_output_error=False)
