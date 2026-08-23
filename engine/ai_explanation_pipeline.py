@@ -39,6 +39,15 @@ Pipeline per finding:
        changes -- _finding_row() already reads
        finding.get("ai_explanation") / finding.get("ai_recommendation").
 
+       Additionally, a small set of underscore-prefixed metadata keys
+       (_ai_model_used, _ai_policy_context) are attached too -- these
+       are NOT part of the finding_schema.json contract and are never
+       read by _finding_row(); they exist purely so
+       engine.persistence.write_ai_output() can build the
+       public.ai_outputs row (model_name, retrieved_policy_context)
+       without re-running retrieval or re-deriving which provider
+       answered.
+
 Failure handling: one finding failing (LLM outage, validation
 rejection, etc.) does NOT stop the batch -- every other finding still
 gets a result. Failures are never silent: each one is recorded with
@@ -97,9 +106,11 @@ def generate_ai_explanation_for_finding(
     Run the full A+B chain for a single CONFIRMED finding.
 
     On success, `finding` is MUTATED IN PLACE (ai_explanation and
-    ai_recommendation attached) and also returned via the result, so
-    callers can either use the return value or rely on the mutation --
-    same convention as engine.finding_review.confirm_finding().
+    ai_recommendation attached, plus the internal _ai_* metadata
+    keys used by engine.persistence.write_ai_output()) and also
+    returned via the result, so callers can either use the return
+    value or rely on the mutation -- same convention as
+    engine.finding_review.confirm_finding().
 
     Raises nothing -- every failure mode (RAG resolution, the gate,
     the LLM layer, output validation) is caught and returned as a
@@ -178,10 +189,17 @@ def generate_ai_explanation_for_finding(
     # ---------------------------------------------------------------
     # Success -- attach to the finding so persistence picks it up
     # with zero changes (_finding_row() already reads these keys).
+    #
+    # The underscore-prefixed keys below are internal-only metadata
+    # for engine.persistence.write_ai_output() -- they are NOT part
+    # of finding_schema.json and _finding_row() never reads them, so
+    # they never leak into the public.findings table.
     # ---------------------------------------------------------------
 
     finding["ai_explanation"] = ai_output["ai_explanation"]
     finding["ai_recommendation"] = ai_output["ai_recommendation"]
+    finding["_ai_model_used"] = ai_output.get("model_used")
+    finding["_ai_policy_context"] = ai_input.get("policy_context", [])
 
     return AIExplanationResult(
         finding_id=finding_id,
