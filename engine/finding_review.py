@@ -90,3 +90,20 @@ def reject_finding(
         reviewed_by=reviewed_by,
         reviewer_notes=reviewer_notes,
     )
+
+def get_confirmed_findings(
+    findings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Return only findings that passed human review.
+
+    AI explanation is allowed only for CONFIRMED findings.
+    REVIEW and REJECTED findings are excluded.
+    """
+
+    return [
+        finding
+        for finding in findings
+        if finding.get("finding_status") == "CONFIRMED"
+    ]    
+    
