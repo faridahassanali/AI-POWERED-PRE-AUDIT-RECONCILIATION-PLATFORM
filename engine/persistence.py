@@ -224,3 +224,60 @@ def write_finding_review(
         .execute()
     )
     return response.data
+
+def _evaluation_to_row(
+    evaluation: Any,
+    audit_run_id: str,
+) -> dict[str, Any]:
+    """Normalize an evaluation object into the audit_evaluations DB row."""
+    if is_dataclass(evaluation):
+        evaluation = asdict(evaluation)
+    elif isinstance(evaluation, dict):
+        evaluation = dict(evaluation)
+    else:
+        raise TypeError(
+            f"Unsupported evaluation type: {type(evaluation)!r}"
+        )
+
+    evaluation_run_id = evaluation.get("audit_run_id")
+
+    if evaluation_run_id is not None and evaluation_run_id != audit_run_id:
+        raise ValueError(
+            "Evaluation audit_run_id does not match the audit run."
+        )
+
+    return {
+        "audit_run_id": audit_run_id,
+        "true_positives": evaluation.get("true_positives", 0),
+        "false_positives": evaluation.get("false_positives", 0),
+        "false_negatives": evaluation.get("false_negatives", 0),
+        "precision": evaluation.get("precision"),
+        "recall": evaluation.get("recall"),
+        "f1": evaluation.get("f1"),
+        "per_control": evaluation.get("per_control", {}),
+        "per_severity": evaluation.get("per_severity", {}),
+    }
+
+
+def write_audit_evaluation(
+    evaluation: Any,
+    audit_run_id: str,
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Upsert the evaluation for one audit run.
+    """
+
+    if not audit_run_id:
+        raise ValueError("audit_run_id is required.")
+
+    client = client or get_supabase_client()
+    row = _evaluation_to_row(evaluation, audit_run_id)
+
+    response = (
+        client.table("audit_evaluations")
+        .upsert(row, on_conflict="audit_run_id")
+        .execute()
+    )
+
+    return response.data
