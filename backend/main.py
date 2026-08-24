@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -6,11 +7,24 @@ from pydantic import BaseModel
 from backend.database import supabase
 
 from engine.audit_pipeline import run_audit
+from engine.policy_registry import load_policy_registry
+from RAG.retriever import retrieve_for_finding
+
 from engine.persistence import (
     write_audit_run,
     write_findings,
+    create_finding_review,
+    get_finding_reviews,
 )
 
+# =========================================================
+# POLICY REGISTRY
+# =========================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+
+policy_registry = load_policy_registry(DATA_DIR)
 
 app = FastAPI(
     title="AI-Powered Pre-Audit Platform",
@@ -113,21 +127,19 @@ def execute_audit():
     """
     Execute the existing deterministic audit pipeline.
 
-    The pipeline itself remains independent from FastAPI
-    and Supabase.
+    Flow:
 
-    This endpoint acts as the bridge:
-
-        API
-          ↓
+        FastAPI
+            ↓
         run_audit()
-          ↓
+            ↓
         persistence
-          ↓
+            ↓
         Supabase
     """
 
     try:
+
         # -----------------------------------------------------
         # 1. RUN EXISTING AUDIT ENGINE
         # -----------------------------------------------------
@@ -178,6 +190,7 @@ def execute_audit():
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
@@ -191,6 +204,7 @@ def execute_audit():
 @app.get("/audit-runs")
 def get_audit_runs():
     try:
+
         response = (
             supabase
             .table("audit_runs")
@@ -209,6 +223,7 @@ def get_audit_runs():
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
@@ -220,6 +235,7 @@ def get_audit_run(
     audit_run_id: str,
 ):
     try:
+
         response = (
             supabase
             .table("audit_runs")
@@ -233,6 +249,7 @@ def get_audit_run(
         )
 
         if not response.data:
+
             return {
                 "status": "not_found",
                 "message": (
@@ -247,6 +264,7 @@ def get_audit_run(
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
@@ -258,6 +276,7 @@ def create_audit_run(
     audit_run: AuditRunCreate,
 ):
     try:
+
         row = {
             "audit_run_id": audit_run.audit_run_id,
             "started_at": (
@@ -289,6 +308,7 @@ def create_audit_run(
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
@@ -301,19 +321,23 @@ def update_audit_run(
     update: AuditRunUpdate,
 ):
     try:
+
         update_data = {}
 
         if update.controls_executed is not None:
+
             update_data["controls_executed"] = (
                 update.controls_executed
             )
 
         if update.total_records_evaluated is not None:
+
             update_data["total_records_evaluated"] = (
                 update.total_records_evaluated
             )
 
         if update.total_findings_generated is not None:
+
             update_data["total_findings_generated"] = (
                 update.total_findings_generated
             )
@@ -336,6 +360,7 @@ def update_audit_run(
         )
 
         if not response.data:
+
             return {
                 "status": "not_found",
                 "message": (
@@ -350,6 +375,7 @@ def update_audit_run(
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
@@ -361,12 +387,79 @@ def update_audit_run(
 # =========================================================
 
 @app.get("/findings")
-def get_findings():
+def get_findings(
+    status: str | None = None,
+    severity: str | None = None,
+    control_id: str | None = None,
+    audit_run_id: str | None = None,
+):
+    """
+    Get findings.
+
+    Optional filters:
+
+        ?status=REVIEW
+        ?severity=HIGH
+        ?control_id=RISK_001
+        ?audit_run_id=AUDIT-xxxx
+
+    Filters can be combined.
+    """
+
     try:
-        response = (
+
+        query = (
             supabase
             .table("findings")
             .select("*")
+        )
+
+        # -----------------------------------------------------
+        # FILTER BY FINDING STATUS
+        # -----------------------------------------------------
+
+        if status is not None:
+
+            query = query.eq(
+                "finding_status",
+                status,
+            )
+
+        # -----------------------------------------------------
+        # FILTER BY SEVERITY
+        # -----------------------------------------------------
+
+        if severity is not None:
+
+            query = query.eq(
+                "severity",
+                severity,
+            )
+
+        # -----------------------------------------------------
+        # FILTER BY CONTROL
+        # -----------------------------------------------------
+
+        if control_id is not None:
+
+            query = query.eq(
+                "control_id",
+                control_id,
+            )
+
+        # -----------------------------------------------------
+        # FILTER BY AUDIT RUN
+        # -----------------------------------------------------
+
+        if audit_run_id is not None:
+
+            query = query.eq(
+                "audit_run_id",
+                audit_run_id,
+            )
+
+        response = (
+            query
             .order(
                 "created_at",
                 desc=True,
@@ -377,21 +470,159 @@ def get_findings():
         return {
             "status": "success",
             "count": len(response.data),
+            "filters": {
+                "status": status,
+                "severity": severity,
+                "control_id": control_id,
+                "audit_run_id": audit_run_id,
+            },
             "findings": response.data,
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
         }
 
 
-@app.get("/findings/{finding_id}")
-def get_finding(
+# =========================================================
+# DASHBOARD SUMMARY
+# =========================================================
+
+@app.get("/dashboard/summary")
+def get_dashboard_summary():
+    """
+    Return a simple summary for a future dashboard.
+    """
+
+    try:
+
+        response = (
+            supabase
+            .table("findings")
+            .select(
+                "finding_status, severity"
+            )
+            .execute()
+        )
+
+        findings = response.data
+
+        summary = {
+            "total_findings": len(findings),
+
+            # Finding status
+            "review": 0,
+            "confirmed": 0,
+            "rejected": 0,
+            "resolved": 0,
+
+            # Severity
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+        }
+
+        for finding in findings:
+
+            status = finding.get(
+                "finding_status"
+            )
+
+            severity = finding.get(
+                "severity"
+            )
+
+            # -------------------------------------------------
+            # COUNT STATUS
+            # -------------------------------------------------
+
+            if status == "REVIEW":
+
+                summary["review"] += 1
+
+            elif status == "CONFIRMED":
+
+                summary["confirmed"] += 1
+
+            elif status == "REJECTED":
+
+                summary["rejected"] += 1
+
+            elif status == "RESOLVED":
+
+                summary["resolved"] += 1
+
+            # -------------------------------------------------
+            # COUNT SEVERITY
+            # -------------------------------------------------
+
+            if severity == "CRITICAL":
+
+                summary["critical"] += 1
+
+            elif severity == "HIGH":
+
+                summary["high"] += 1
+
+            elif severity == "MEDIUM":
+
+                summary["medium"] += 1
+
+            elif severity == "LOW":
+
+                summary["low"] += 1
+
+        return {
+            "status": "success",
+            "summary": summary,
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# =========================================================
+# GET SINGLE FINDING
+# =========================================================
+
+# =========================================================
+# FINDING POLICY RETRIEVAL
+# =========================================================
+
+@app.get("/findings/{finding_id}/policy")
+def get_finding_policy(
     finding_id: str,
 ):
+    """
+    Retrieve the applicable policy context for one finding.
+
+    Flow:
+
+        Finding
+            ↓
+        policy_references
+            ↓
+        Policy Registry
+            ↓
+        RAG Retriever
+            ↓
+        Policy Context
+    """
+
     try:
+
+        # -----------------------------------------------------
+        # 1. GET FINDING
+        # -----------------------------------------------------
+
         response = (
             supabase
             .table("findings")
@@ -405,6 +636,7 @@ def get_finding(
         )
 
         if not response.data:
+
             return {
                 "status": "not_found",
                 "message": (
@@ -413,23 +645,51 @@ def get_finding(
                 ),
             }
 
+        finding = response.data[0]
+
+        # -----------------------------------------------------
+        # 2. RETRIEVE POLICY THROUGH RAG
+        # -----------------------------------------------------
+
+        policy_context = retrieve_for_finding(
+            finding=finding,
+            registry=policy_registry,
+            top_k=3,
+        )
+
+        # -----------------------------------------------------
+        # 3. RETURN POLICY CONTEXT
+        # -----------------------------------------------------
+
         return {
             "status": "success",
-            "finding": response.data[0],
+            "finding_id": finding_id,
+            "policy_references": (
+                finding.get(
+                    "policy_references",
+                    [],
+                )
+            ),
+            "count": len(policy_context),
+            "policy_context": policy_context,
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
         }
-
+# =========================================================
+# CREATE FINDING
+# =========================================================
 
 @app.post("/findings")
 def create_finding(
     finding: FindingCreate,
 ):
     try:
+
         row = {
             "finding_id": finding.finding_id,
             "audit_run_id": finding.audit_run_id,
@@ -463,11 +723,16 @@ def create_finding(
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
         }
 
+
+# =========================================================
+# UPDATE FINDING / HUMAN REVIEW
+# =========================================================
 
 @app.patch("/findings/{finding_id}")
 def update_finding(
@@ -475,44 +740,102 @@ def update_finding(
     update: FindingUpdate,
 ):
     try:
+
+        # -----------------------------------------------------
+        # 1. GET CURRENT FINDING
+        # -----------------------------------------------------
+
+        current_response = (
+            supabase
+            .table("findings")
+            .select("*")
+            .eq(
+                "finding_id",
+                finding_id,
+            )
+            .limit(1)
+            .execute()
+        )
+
+        if not current_response.data:
+
+            return {
+                "status": "not_found",
+                "message": (
+                    f"Finding '{finding_id}' "
+                    "was not found."
+                ),
+            }
+
+        current_finding = (
+            current_response.data[0]
+        )
+
+        previous_status = (
+            current_finding.get(
+                "finding_status"
+            )
+        )
+
+        # -----------------------------------------------------
+        # 2. BUILD UPDATE
+        # -----------------------------------------------------
+
         update_data = {}
 
         if update.finding_status is not None:
+
             update_data["finding_status"] = (
                 update.finding_status
             )
 
         if update.reviewed_by is not None:
+
             update_data["reviewed_by"] = (
                 update.reviewed_by
             )
 
         if update.reviewer_notes is not None:
+
             update_data["reviewer_notes"] = (
                 update.reviewer_notes
             )
 
         if update.ai_explanation is not None:
+
             update_data["ai_explanation"] = (
                 update.ai_explanation
             )
 
         if update.ai_recommendation is not None:
+
             update_data["ai_recommendation"] = (
                 update.ai_recommendation
             )
 
-        update_data["review_timestamp"] = (
-            datetime.now(
-                timezone.utc
-            ).isoformat()
-        )
+        # Only add review timestamp when this
+        # is actually a human review/update.
+        if (
+            update.finding_status is not None
+            or update.reviewed_by is not None
+            or update.reviewer_notes is not None
+        ):
+
+            update_data["review_timestamp"] = (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            )
 
         update_data["updated_at"] = (
             datetime.now(
                 timezone.utc
             ).isoformat()
         )
+
+        # -----------------------------------------------------
+        # 3. UPDATE FINDING
+        # -----------------------------------------------------
 
         response = (
             supabase
@@ -526,6 +849,7 @@ def update_finding(
         )
 
         if not response.data:
+
             return {
                 "status": "not_found",
                 "message": (
@@ -534,12 +858,117 @@ def update_finding(
                 ),
             }
 
+        updated_finding = response.data[0]
+
+        new_status = (
+            updated_finding.get(
+                "finding_status"
+            )
+        )
+
+        # -----------------------------------------------------
+        # 4. CREATE REVIEW HISTORY
+        # -----------------------------------------------------
+
+        # Only create history when the finding status
+        # actually changes.
+        if (
+            update.finding_status is not None
+            and previous_status != new_status
+        ):
+
+            try:
+
+                create_finding_review(
+                    finding_id=finding_id,
+                    audit_run_id=(
+                        updated_finding.get(
+                            "audit_run_id"
+                        )
+                    ),
+                    previous_status=previous_status,
+                    new_status=new_status,
+                    reviewed_by=(
+                        update.reviewed_by
+                    ),
+                    reviewer_notes=(
+                        update.reviewer_notes
+                    ),
+                )
+
+            except Exception as review_error:
+
+                return {
+                    "status": "success",
+                    "warning": (
+                        "Finding was updated, "
+                        "but review history could "
+                        "not be recorded."
+                    ),
+                    "review_error": str(
+                        review_error
+                    ),
+                    "finding": updated_finding,
+                }
+
         return {
             "status": "success",
-            "finding": response.data[0],
+            "finding": updated_finding,
         }
 
     except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# =========================================================
+# FINDING REVIEW HISTORY
+# =========================================================
+
+@app.get("/findings/{finding_id}/reviews")
+def get_finding_review_history(
+    finding_id: str,
+):
+    try:
+
+        # First verify that the finding exists.
+        finding_response = (
+            supabase
+            .table("findings")
+            .select("finding_id")
+            .eq(
+                "finding_id",
+                finding_id,
+            )
+            .limit(1)
+            .execute()
+        )
+
+        if not finding_response.data:
+
+            return {
+                "status": "not_found",
+                "message": (
+                    f"Finding '{finding_id}' "
+                    "was not found."
+                ),
+            }
+
+        reviews = get_finding_reviews(
+            finding_id
+        )
+
+        return {
+            "status": "success",
+            "count": len(reviews),
+            "reviews": reviews,
+        }
+
+    except Exception as e:
+
         return {
             "status": "error",
             "message": str(e),
