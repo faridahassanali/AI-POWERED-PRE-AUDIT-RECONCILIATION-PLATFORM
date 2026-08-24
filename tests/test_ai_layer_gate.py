@@ -24,6 +24,7 @@ def make_finding(status="REVIEW"):
                 "section": "Requirements",
             }
         ],
+        audit_run_id="TEST-AUDIT-RUN",
     )
 
 

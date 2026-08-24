@@ -92,7 +92,9 @@ def _make_finding(**overrides):
         finding_status="REVIEW",
         expected="Opened wallets must have a CLEAR screening result.",
         actual="Screening status is HIGH_RISK.",
-        evidence={"screening_status": "HIGH_RISK"},
+        evidence={
+            "screening_status": "HIGH_RISK",
+        },
         policy_references=[
             {
                 "policy_id": "SCREENING-POLICY-001",
@@ -100,8 +102,9 @@ def _make_finding(**overrides):
                 "section": "Requirements",
             }
         ],
+        audit_run_id="AUDIT-TEST123",
     )
-    finding["audit_run_id"] = "AUDIT-TEST123"
+
     finding.update(overrides)
     return finding
 

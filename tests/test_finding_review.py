@@ -6,25 +6,26 @@ from engine.finding_review import confirm_finding, reject_finding
 
 def make_finding():
     return build_finding(
-        control_id="SCREENING_001",
-        customer_id="CUST100005",
-        severity="HIGH",
-        assessment_status="FAIL",
-        finding_status="REVIEW",
-        expected="Opened wallets must have a CLEAR screening result.",
-        actual="Screening status is HIGH_RISK.",
-        evidence={
-            "screening_status": "HIGH_RISK",
-            "screening_evidence_present": "True"
-        },
-        policy_references=[
-            {
-                "policy_id": "SCREENING-POLICY-001",
-                "version": "1.0",
-                "section": "Requirements"
-            }
-        ]
-    )
+    control_id="SCREENING_001",
+    customer_id="CUST100005",
+    severity="HIGH",
+    assessment_status="FAIL",
+    finding_status="REVIEW",
+    expected="Opened wallets must have a CLEAR screening result.",
+    actual="Screening status is HIGH_RISK.",
+    evidence={
+        "screening_status": "HIGH_RISK",
+        "screening_evidence_present": "True",
+    },
+    policy_references=[
+        {
+            "policy_id": "SCREENING-POLICY-001",
+            "version": "1.0",
+            "section": "Requirements",
+        }
+    ],
+    audit_run_id="TEST-AUDIT-RUN",
+)
 
 
 def test_confirm_finding():
