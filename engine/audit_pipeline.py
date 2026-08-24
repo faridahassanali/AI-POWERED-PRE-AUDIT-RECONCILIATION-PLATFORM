@@ -99,6 +99,7 @@ from RAG.retriever import (
 from engine.audit_trace import (
     create_audit_trace,
     complete_audit_trace,
+    fail_audit_trace,
 )
 
 from engine.audit_output import (
@@ -509,3 +510,173 @@ def explain_confirmed_findings(
         )
 
     return explanations
+def run_audit(
+    data_dir: Path | str | None = None,
+) -> AuditPipelineResult:
+    """
+    ...
+    This function always returns an AuditPipelineResult, even on
+    failure -- including failures during data loading itself.
+    Callers must check `result.audit_trace.status`.
+    """
+
+    # =========================================================
+    # 1. CREATE AUDIT RUN ID + INITIAL TRACE
+    # =========================================================
+    # The trace is created FIRST, before anything that can fail
+    # (including data loading), so that a failure at any stage --
+    # not just inside the deterministic controls -- is still
+    # recorded on a trace instead of raising with nothing captured.
+    # total_records_evaluated is corrected below once `unified`
+    # exists; if we never get that far, it stays 0, which is
+    # accurate for a run that never loaded any records.
+
+    audit_run_id = f"AUDIT-{uuid4().hex}"
+
+    audit_trace = create_audit_trace(
+        audit_run_id=audit_run_id,
+        controls_executed=[
+            "SCREENING_001",
+            "RISK_001",
+            "ARABIC_NAME_001",
+            "DORMANT_001",
+            "RECON_001",
+        ],
+        total_records_evaluated=0,
+    )
+
+    try:
+        # =====================================================
+        # 2. LOAD DATA
+        # =====================================================
+        if data_dir is None:
+            tables = load_data()
+        else:
+            tables = load_data(Path(data_dir))
+
+        # =====================================================
+        # 3. NORMALIZATION
+        # =====================================================
+        normalized_tables = _normalize_tables(tables)
+
+        # =====================================================
+        # 4. BUILD UNIFIED CUSTOMER RECORD
+        # =====================================================
+        unified = build_unified_customer_record(normalized_tables)
+
+        audit_trace.total_records_evaluated = len(unified)
+
+        # =====================================================
+        # 5-8. DETERMINISTIC CONTROLS + VALIDATION
+        # =====================================================
+        generated_findings = run_all_controls(
+            unified=unified,
+            tables=normalized_tables,
+            audit_run_id=audit_run_id,
+        )
+
+        _validate_findings_share_audit_run_id(
+            generated_findings,
+            audit_run_id,
+        )
+
+        _validate_generated_findings(generated_findings)
+
+        validate_unique_findings_or_raise(generated_findings)
+
+    except Exception as exc:
+        fail_audit_trace(trace=audit_trace, error=exc)
+
+        empty_evaluation = evaluate_findings(
+            generated_findings=[],
+            expected_findings=[],
+        )
+
+        failure_report = (
+            "AUDIT RUN FAILED\n"
+            f"audit_run_id: {audit_run_id}\n"
+            f"error_type: {audit_trace.error_type}\n"
+            f"error_message: {audit_trace.error_message}\n"
+        )
+
+        audit_output = build_audit_output(
+            audit_trace=audit_trace,
+            findings=[],
+            explanations=[],
+            evaluation=empty_evaluation,
+            report=failure_report,
+        )
+
+        return AuditPipelineResult(
+            generated_findings=[],
+            expected_findings=[],
+            evaluation=empty_evaluation,
+            report=failure_report,
+            explanations=[],
+            audit_trace=audit_trace,
+            audit_output=audit_output,
+        )
+
+    # =========================================================
+    # 9. COMPLETE AUDIT TRACE
+    # =========================================================
+
+    audit_trace = complete_audit_trace(
+        trace=audit_trace,
+        total_findings_generated=len(generated_findings),
+    )
+
+    # =========================================================
+    # 10. LOAD EXPECTED FINDINGS / GROUND TRUTH
+    # =========================================================
+
+    expected_findings = normalized_tables["expected_findings"].to_dict(
+        orient="records"
+    )
+
+    # =========================================================
+    # 11. GROUND TRUTH EVALUATION
+    # =========================================================
+
+    evaluation = evaluate_findings(
+        generated_findings=generated_findings,
+        expected_findings=expected_findings,
+    )
+
+    # =========================================================
+    # 12. EVALUATION REPORT
+    # =========================================================
+
+    report = generate_evaluation_report(evaluation)
+
+    # =========================================================
+    # 13. PRE-AI EXPLANATIONS
+    # =========================================================
+
+    explanations: list[dict[str, Any]] = []
+
+    # =========================================================
+    # 14. BUILD AUDIT OUTPUT
+    # =========================================================
+
+    audit_output = build_audit_output(
+        audit_trace=audit_trace,
+        findings=generated_findings,
+        explanations=explanations,
+        evaluation=evaluation,
+        report=report,
+    )
+
+    # =========================================================
+    # 15. RETURN RESULT
+    # =========================================================
+
+    return AuditPipelineResult(
+        generated_findings=generated_findings,
+        expected_findings=expected_findings,
+        evaluation=evaluation,
+        report=report,
+        explanations=explanations,
+        audit_trace=audit_trace,
+        audit_output=audit_output,
+    )

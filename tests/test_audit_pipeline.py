@@ -117,3 +117,26 @@ def test_pipeline_evaluation_counts_are_consistent():
             }
         )
     )
+def test_run_audit_returns_failed_result_instead_of_raising(monkeypatch):
+    """
+    A failure anywhere in the pipeline (e.g. data loading) must not
+    raise out of run_audit() -- it must be captured on the trace and
+    returned as a FAILED AuditPipelineResult, so a failed run is
+    never silently lost.
+    """
+    def _broken_load_data(*args, **kwargs):
+        raise FileNotFoundError("simulated missing data file")
+
+    monkeypatch.setattr(
+        "engine.audit_pipeline.load_data",
+        _broken_load_data,
+    )
+
+    result = run_audit()
+
+    assert result is not None
+    assert result.audit_trace.status == "FAILED"
+    assert result.audit_trace.error_type == "FileNotFoundError"
+    assert "simulated missing data file" in result.audit_trace.error_message
+    assert result.generated_findings == []
+    assert result.evaluation is not None    

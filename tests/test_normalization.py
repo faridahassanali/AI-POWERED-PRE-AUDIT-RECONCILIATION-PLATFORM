@@ -138,3 +138,23 @@ def test_normalization_does_not_modify_original_dataframe():
     assert df["wallet_status"].iloc[0] == " OPENED "
 
     assert result["wallet_status"].iloc[0] == "OPENED"
+def test_unrecognized_boolean_value_raises():
+    """
+    Boolean-like fields must fail loudly on unrecognized values.
+    Unlike categorical fields (which intentionally preserve
+    unknown values), a boolean field with a value outside
+    TRUE_VALUES/FALSE_VALUES almost always means bad or malformed
+    source data (e.g. a typo). Silently passing it through would
+    let corrupted data reach the controls undetected.
+    """
+
+    df = pd.DataFrame(
+        {
+            "screening_evidence_present": [
+                "maybe",
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError):
+        normalize_dataframe(df)    

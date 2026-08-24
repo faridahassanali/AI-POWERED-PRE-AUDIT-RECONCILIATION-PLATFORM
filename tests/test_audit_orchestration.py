@@ -175,3 +175,24 @@ def test_run_audit_and_persist_partial_failure_leaves_orphaned_audit_run():
     # downstream reader to know this run is incomplete.
     assert "audit_runs" in written_tables
     assert "findings" not in written_tables
+def test_run_audit_and_persist_skips_persistence_when_pipeline_failed(monkeypatch):
+    """
+    A failed pipeline run (audit_trace.status == "FAILED") must never
+    be persisted to Supabase as if it succeeded.
+    """
+    def _broken_load_data(*args, **kwargs):
+        raise FileNotFoundError("simulated missing data file")
+
+    monkeypatch.setattr(
+        "engine.audit_pipeline.load_data",
+        _broken_load_data,
+    )
+
+    client = _FakeClient()
+
+    result = run_audit_and_persist(client=client)
+
+    assert result.pipeline_result.audit_trace.status == "FAILED"
+    assert result.persistence.persisted is False
+    assert result.persistence.reason is not None
+    assert client.calls == []  # nothing was ever written    
