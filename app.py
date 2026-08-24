@@ -34,13 +34,14 @@ if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY aren't set, the write is
 skipped silently and the UI keeps working exactly as before —
 persistence is never a hard requirement for using the app.
 
-    - A fresh audit run           -> audit_runs, findings,
-                                      audit_evaluations
-    - A Confirm/Reject decision   -> finding_reviews, and (for
+    - A fresh audit run           -> policies, policy_versions,
+                                      audit_runs, findings, audit_evaluations
+    - A Confirm/Reject decision   -> updated findings, finding_reviews,
+                                      and (for
                                       Confirm only) an immediate
                                       deterministic Stage 2
                                       explanation -> finding_explanations
-    - A generated AI explanation  -> ai_outputs
+    - A generated AI explanation  -> updated findings, ai_outputs
 
 Backend/API integration can replace load_pipeline_result() later
 without changing the UI structure.
@@ -63,10 +64,13 @@ from engine.finding_review import (
 )
 from engine.persistence import (
     PersistenceNotConfigured,
+    get_supabase_client,
     write_ai_output,
     write_finding_explanation,
     write_finding_review,
+    write_findings,
 )
+from engine.policy_persistence import load_policy_registry_from_supabase, sync_policy_registry
 from engine.policy_registry import load_policy_registry
 
 
@@ -240,7 +244,17 @@ def load_registry():
     generate_ai_explanation_for_finding() to resolve a finding's
     policy_context via the RAG bridge before calling the LLM.
     """
-    return load_policy_registry(DATA_DIR)
+    local_registry = load_policy_registry(DATA_DIR)
+
+    try:
+        client = get_supabase_client()
+    except PersistenceNotConfigured:
+        # Local Markdown keeps the application usable before Supabase is
+        # configured; normal production runs use the database-backed store.
+        return local_registry
+
+    sync_policy_registry(local_registry, client=client)
+    return load_policy_registry_from_supabase(client=client)
 
 
 def get_finding_by_id(
@@ -1021,6 +1035,7 @@ def render_finding_detail(
                     else:
 
                         try:
+                            write_findings([finding])
                             write_finding_review(
                                 finding,
                                 previous_status=previous_status,
@@ -1093,6 +1108,7 @@ def render_finding_detail(
                     else:
 
                         try:
+                            write_findings([finding])
                             write_finding_review(
                                 finding,
                                 previous_status=previous_status,
@@ -1213,6 +1229,7 @@ def render_finding_detail(
                 if result.succeeded:
 
                     try:
+                        write_findings([finding])
                         write_ai_output(finding)
                     except PersistenceNotConfigured:
                         # Supabase is optional -- the explanation

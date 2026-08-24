@@ -34,6 +34,11 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional development helper
+    load_dotenv = None
+
+try:
     from supabase import create_client, Client
 except ImportError:
     create_client = None
@@ -55,6 +60,9 @@ def get_supabase_client() -> "Client":
     Raises PersistenceNotConfigured if the Supabase package is missing
     or the required environment variables are not configured.
     """
+
+    if load_dotenv is not None:
+        load_dotenv()
 
     if create_client is None:
         raise PersistenceNotConfigured(
@@ -377,4 +385,71 @@ def write_finding_review(
         .execute()
     )
 
+    return response.data
+
+
+def write_finding_explanation(
+    explanation: dict[str, Any],
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Upsert one row into public.finding_explanations.
+
+    Call this with the output of
+    engine.finding_explainer.explain_finding() -- the deterministic,
+    template-based Stage 2 explanation (no LLM, cannot hallucinate
+    because it only reformats an already-CONFIRMED finding).
+
+    Upsert on finding_id (matches the table's `unique (finding_id)`
+    constraint) so this is safe to call again if the explanation is
+    ever regenerated for the same finding.
+
+    This is a DIFFERENT artifact from public.ai_outputs -- the LLM's
+    grounded narrative explanation/recommendation. Both may exist for
+    the same CONFIRMED finding; they answer different questions
+    (deterministic audit trail vs. AI-generated narrative).
+    """
+
+    client = client or get_supabase_client()
+    row = _finding_explanation_row(explanation)
+
+    response = (
+        client.table("finding_explanations")
+        .upsert(row, on_conflict="finding_id")
+        .execute()
+    )
+    return response.data
+
+
+def write_ai_output(
+    finding: dict[str, Any],
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Insert one row into public.ai_outputs.
+
+    Call this AFTER
+    engine.ai_explanation_pipeline.generate_ai_explanation_for_finding()
+    has already succeeded and attached ai_explanation /
+    ai_recommendation (and the internal _ai_* metadata keys) to
+    `finding`. Raises ValueError if the finding has no
+    ai_explanation yet, since an empty ai_outputs row would be
+    meaningless.
+    """
+
+    if not finding.get("ai_explanation"):
+        raise ValueError(
+            "Finding has no ai_explanation to persist. Call this "
+            "only after generate_ai_explanation_for_finding() has "
+            "succeeded."
+        )
+
+    client = client or get_supabase_client()
+    row = _ai_output_row(finding)
+
+    response = (
+        client.table("ai_outputs")
+        .insert(row)
+        .execute()
+    )
     return response.data
