@@ -241,7 +241,7 @@ def generate_ai_explanations(
             finding,
             registry=registry,
             primary=primary,
-            fallback=fallback,
+            fallback=fallback, 
         )
         for finding in findings
     ]
