@@ -18,6 +18,7 @@ from engine.persistence import (
     write_audit_run,
     write_findings,
     write_finding_review,
+    write_audit_evaluation,
 )
 from engine.finding_builder import build_finding
 from engine.finding_review import confirm_finding
@@ -277,3 +278,37 @@ def test_get_client_does_not_load_dotenv_implicitly(monkeypatch):
 
     with pytest.raises(PersistenceNotConfigured):
         get_supabase_client()
+        
+def test_write_audit_evaluation_shapes_row_correctly():
+    evaluation = {
+        "true_positives": 10,
+        "false_positives": 2,
+        "false_negatives": 3,
+        "precision": 0.8333,
+        "recall": 0.7692,
+        "f1_score": 0.8,
+        "report": "Evaluation report",
+    }
+
+    client = _FakeClient()
+
+    result = write_audit_evaluation(
+        evaluation,
+        audit_run_id="RUN-001",
+        client=client,
+    )
+
+    call = client.calls[-1]
+
+    assert call["table"] == "audit_evaluations"
+    assert call["op"] == "upsert"
+    assert call["on_conflict"] == "audit_run_id"
+
+    assert call["payload"]["audit_run_id"] == "RUN-001"
+    assert call["payload"]["true_positives"] == 10
+    assert call["payload"]["false_positives"] == 2
+    assert call["payload"]["false_negatives"] == 3
+    assert call["payload"]["precision"] == 0.8333
+    assert call["payload"]["recall"] == 0.7692
+    assert call["payload"]["f1_score"] == 0.8
+    assert call["payload"]["report"] == "Evaluation report"
