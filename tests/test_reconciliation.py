@@ -10,6 +10,13 @@ import pandas as pd
 from engine.reconciliation import reconciliation_001
 
 
+# audit_run_id is now a required argument for reconciliation_001()
+# (see engine/reconciliation.py / engine/finding_builder.py) -- every
+# finding in a real run must share ONE audit_run_id, so it can no
+# longer be invented internally per finding.
+TEST_AUDIT_RUN_ID = "RUN-TEST-0001"
+
+
 def make_tables(
     source_rows,
     report_rows,
@@ -109,7 +116,7 @@ def test_matching_records_pass():
         screening,
     )
 
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     assert findings == []
 
@@ -160,13 +167,14 @@ def test_risk_level_mismatch_fails():
         screening,
     )
 
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     assert len(findings) == 1
     assert findings[0]["control_id"] == "RECON_001"
     assert findings[0]["customer_id"] == "CUST_TEST_002"
     assert findings[0]["severity"] == "HIGH"
     assert findings[0]["assessment_status"] == "FAIL"
+    assert findings[0]["audit_run_id"] == TEST_AUDIT_RUN_ID
 
     assert findings[0]["evidence"]["mismatches"]["risk_level"] == {
         "source": "HIGH",
@@ -220,7 +228,7 @@ def test_screening_status_mismatch_fails():
         screening,
     )
 
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     assert len(findings) == 1
 
@@ -268,7 +276,7 @@ def test_missing_record_from_final_report_fails():
         screening,
     )
 
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     assert len(findings) == 1
     assert findings[0]["customer_id"] == "CUST_TEST_004"
@@ -309,7 +317,7 @@ def test_extra_record_in_final_report_fails():
         screening,
     )
 
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     assert len(findings) == 1
     assert findings[0]["customer_id"] == "CUST_TEST_999"
@@ -367,7 +375,7 @@ def test_multiple_mismatches_are_combined_into_one_finding():
         screening,
     )
 
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     assert len(findings) == 1
 

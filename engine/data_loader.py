@@ -107,4 +107,11 @@ def build_unified_customer_record(
         validate="one_to_one",
     )
 
+    # Left joins can introduce real NaN values for customers with
+    # no matching row (e.g. no screening_results entry). Every
+    # source CSV is loaded with fillna("") so downstream control
+    # checks compare against "", not NaN. Re-apply it here so the
+    # merge doesn't silently reintroduce NaN for unmatched rows.
+    unified = unified.fillna("")
+
     return unified

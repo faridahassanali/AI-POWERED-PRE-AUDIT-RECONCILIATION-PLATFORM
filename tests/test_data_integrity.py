@@ -68,3 +68,27 @@ def test_unified_record_has_expected_customer_count(tables, unified):
         f"Expected {expected_count} unique customers, "
         f"but unified record contains {actual_count}."
     )
+
+
+def test_unified_record_has_no_nan_after_merge(unified):
+    """
+    Left joins (e.g. screening_results) must not leave real NaN
+    values in the unified record. Every source table is loaded
+    with fillna(""), so any customer with no matching row in a
+    joined table must end up with "" too -- not NaN. Downstream
+    control checks compare against "", and a NaN slipping through
+    would make those checks silently fail to detect missing data.
+    """
+
+    nan_columns = [
+        column
+        for column in unified.columns
+        if unified[column].isna().any()
+    ]
+
+    assert nan_columns == [], (
+        f"Unified record contains real NaN values in columns: "
+        f"{nan_columns}. Left joins likely reintroduced NaN for "
+        f"unmatched customers -- check fillna('') is applied "
+        f"after the merges."
+    )

@@ -166,3 +166,27 @@ def validate_finding_or_raise(
         )
 
         raise FindingValidationError(error_message)
+def create_validator(
+    schema: dict[str, Any],
+) -> Draft7Validator:
+    """
+    Create a JSON Schema validator for the finding schema.
+
+    Args:
+        schema: Loaded finding JSON schema.
+
+    Returns:
+        A configured Draft7Validator.
+
+    Raises:
+        SchemaError:
+            If the provided schema itself is invalid.
+    """
+
+    try:
+        Draft7Validator.check_schema(schema)
+        return Draft7Validator(schema)
+    except SchemaError as exc:
+        raise SchemaError(
+            f"Invalid finding schema: {exc.message}"
+        ) from exc    
