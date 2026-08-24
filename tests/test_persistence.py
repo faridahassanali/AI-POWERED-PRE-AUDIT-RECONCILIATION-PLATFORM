@@ -10,6 +10,7 @@ verify the row-shaping logic and call pattern in isolation.
 import os
 
 import pytest
+import engine.persistence as persistence
 
 from engine.persistence import (
     PersistenceNotConfigured,
@@ -123,6 +124,26 @@ def test_get_client_raises_when_only_url_set(monkeypatch):
 
     with pytest.raises(PersistenceNotConfigured):
         get_supabase_client()
+
+
+def test_get_client_uses_service_role_key(monkeypatch):
+    created_with = {}
+
+    def fake_create_client(url, key):
+        created_with["url"] = url
+        created_with["key"] = key
+        return object()
+
+    monkeypatch.setattr(persistence, "create_client", fake_create_client)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+    get_supabase_client()
+
+    assert created_with == {
+        "url": "https://example.supabase.co",
+        "key": "service-role-key",
+    }
 
 
 # =====================================================================

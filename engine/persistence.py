@@ -71,11 +71,11 @@ def get_supabase_client() -> "Client":
         )
 
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
     if not url or not key:
         raise PersistenceNotConfigured(
-            "SUPABASE_URL and SUPABASE_KEY must be set "
+            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set "
             "as environment variables."
         )
 
