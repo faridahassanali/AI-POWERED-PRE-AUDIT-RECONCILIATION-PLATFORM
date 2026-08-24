@@ -240,21 +240,13 @@ def load_pipeline_result():
 @st.cache_resource(show_spinner="Loading policy registry...")
 def load_registry():
     """
-    Load the Policy Registry once per session -- required by
-    generate_ai_explanation_for_finding() to resolve a finding's
-    policy_context via the RAG bridge before calling the LLM.
+    Load the Policy Registry once per session.
+
+    The local Markdown policies are the authoritative policy source
+    for RAG retrieval. Supabase persistence is handled separately by
+    the audit orchestration layer.
     """
-    local_registry = load_policy_registry(DATA_DIR)
-
-    try:
-        client = get_supabase_client()
-    except PersistenceNotConfigured:
-        # Local Markdown keeps the application usable before Supabase is
-        # configured; normal production runs use the database-backed store.
-        return local_registry
-
-    sync_policy_registry(local_registry, client=client)
-    return load_policy_registry_from_supabase(client=client)
+    return load_policy_registry(DATA_DIR)
 
 
 def get_finding_by_id(

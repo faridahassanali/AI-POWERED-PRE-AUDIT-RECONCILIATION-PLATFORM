@@ -317,7 +317,7 @@ def _evaluation_to_row(
 
 
 # =====================================================================
-# WRITE FUNCTIONS
+# AUDIT RUNS
 # =====================================================================
 
 
@@ -349,6 +349,11 @@ def write_audit_run(
     )
 
     return response.data
+
+
+# =====================================================================
+# FINDINGS
+# =====================================================================
 
 
 def write_findings(
@@ -390,6 +395,11 @@ def write_findings(
     return response.data
 
 
+# =====================================================================
+# FINDING REVIEWS
+# =====================================================================
+
+
 def write_finding_review(
     finding: dict[str, Any],
     previous_status: str,
@@ -417,6 +427,78 @@ def write_finding_review(
     )
 
     return response.data
+
+
+def create_finding_review(
+    finding_id: str,
+    audit_run_id: str,
+    previous_status: str,
+    new_status: str,
+    reviewed_by: str | None = None,
+    reviewer_notes: str | None = None,
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Create one finding review-history record.
+
+    This function is used directly by the FastAPI backend.
+    """
+
+    client = client or get_supabase_client()
+
+    row = {
+        "finding_id": finding_id,
+        "audit_run_id": audit_run_id,
+        "previous_status": previous_status,
+        "new_status": new_status,
+        "reviewed_by": reviewed_by,
+        "reviewer_notes": reviewer_notes,
+    }
+
+    response = (
+        client
+        .table("finding_reviews")
+        .insert(row)
+        .execute()
+    )
+
+    if not response.data:
+        return {}
+
+    return response.data[0]
+
+
+def get_finding_reviews(
+    finding_id: str,
+    client: "Client | None" = None,
+) -> list[dict[str, Any]]:
+    """
+    Get all review-history records for one finding.
+    """
+
+    client = client or get_supabase_client()
+
+    response = (
+        client
+        .table("finding_reviews")
+        .select("*")
+        .eq(
+            "finding_id",
+            finding_id,
+        )
+        .order(
+            "reviewed_at",
+            desc=True,
+        )
+        .execute()
+    )
+
+    return response.data or []
+
+
+# =====================================================================
+# AUDIT EVALUATION
+# =====================================================================
 
 
 def write_audit_evaluation(
@@ -451,6 +533,11 @@ def write_audit_evaluation(
     return response.data
 
 
+# =====================================================================
+# FINDING EXPLANATIONS
+# =====================================================================
+
+
 def write_finding_explanation(
     explanation: dict[str, Any],
     client: "Client | None" = None,
@@ -474,6 +561,11 @@ def write_finding_explanation(
     )
 
     return response.data
+
+
+# =====================================================================
+# AI OUTPUT
+# =====================================================================
 
 
 def write_ai_output(

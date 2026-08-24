@@ -16,6 +16,7 @@ required for this MVP.
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
+import engine.persistence as persistence_module
 
 from app import filter_findings, get_finding_by_id, get_nav_state, sort_findings
 
@@ -381,6 +382,17 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(monke
         "load_policy_registry",
         lambda data_dir: object(),
     )
+    monkeypatch.setattr(
+    persistence_module,
+    "write_findings",
+    lambda *args, **kwargs: [],
+)
+
+    monkeypatch.setattr(
+    persistence_module,
+    "write_ai_output",
+    lambda *args, **kwargs: {},
+)
 
     def _fake_generate(finding, registry, primary=None, fallback=None):
         finding["ai_explanation"] = "Fake grounded explanation."
