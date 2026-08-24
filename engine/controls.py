@@ -9,6 +9,8 @@ Controls:
     RECON_001
 """
 
+import warnings
+
 try:
     from .reconciliation import reconciliation_001
     from .finding_builder import build_finding
@@ -262,7 +264,7 @@ def arabic_name_001(record):
             {
                 "policy_id": "DATA-POLICY-001",
                 "version": "1.0",
-                "section": "Customer Data",
+                "section": "Requirements",
             }
         ],
     )
@@ -353,7 +355,22 @@ def run_all_controls(unified, tables=None):
 
     Customer-level controls operate on `unified`.
 
-    RECON_001 operates on the original source tables.
+    RECON_001 operates on the original source tables and is SKIPPED
+    entirely if `tables` is not provided.
+
+    `tables=None` is a legitimate, intentional choice when a caller
+    only wants to exercise the customer-level controls in isolation
+    (e.g. tests that filter results down to one control_id). It is
+    NOT a legitimate default for the real pipeline -- see
+    engine.audit_pipeline.run_audit(), which always passes `tables`
+    so RECON_001 is never silently dropped in production.
+
+    If you call this without `tables` and did NOT mean to skip
+    RECON_001, that omission would previously fail silently (fewer
+    findings, no error, no warning). A RuntimeWarning is now raised
+    instead, so the omission is visible rather than silent -- it does
+    not stop execution, since skipping RECON_001 deliberately is a
+    valid use case.
     """
 
     findings = []
@@ -385,10 +402,24 @@ def run_all_controls(unified, tables=None):
     # ---------------------------------------------------------
 
     if tables is not None:
+
         reconciliation_findings = reconciliation_001(
             tables
         )
 
         findings.extend(reconciliation_findings)
+
+    else:
+
+        warnings.warn(
+            "run_all_controls() was called without `tables` -- "
+            "RECON_001 (source-to-report reconciliation) is being "
+            "SKIPPED. If this is a real audit run, pass `tables=...` "
+            "so reconciliation findings aren't silently dropped. If "
+            "you're intentionally testing customer-level controls in "
+            "isolation, this warning is expected and can be ignored.",
+            category=RuntimeWarning,
+            stacklevel=2,
+        )
 
     return findings

@@ -48,6 +48,7 @@ from uuid import uuid4
 import pandas as pd
 
 from engine.data_loader import (
+    DATA_DIR,
     load_data,
     build_unified_customer_record,
 )
@@ -83,6 +84,15 @@ from engine.finding_explainer import (
 
 from engine.ai_input import (
     build_ai_input,
+)
+
+from engine.policy_registry import (
+    PolicyRegistry,
+    load_policy_registry,
+)
+
+from RAG.retriever import (
+    retrieve_for_finding,
 )
 
 from engine.audit_trace import (
@@ -362,6 +372,8 @@ def run_audit(
 
 def explain_confirmed_findings(
     findings: list[dict[str, Any]],
+    registry: PolicyRegistry | None = None,
+    data_dir: Path | str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Stage 2 of the audit pipeline.
@@ -369,16 +381,46 @@ def explain_confirmed_findings(
     Generate explanations ONLY for findings that have
     passed human review and are CONFIRMED.
 
-    The AI Input Contract enforces the confirmed-only gate
-    before the explanation layer is called.
+    For each finding, this:
+
+    1. Resolves policy_context via RAG.retriever.retrieve_for_finding(),
+       which grounds strictly to the finding's own policy_references
+       (see RAG/retriever.py) -- it never substitutes a different,
+       merely-similar policy.
+    2. Builds the AI Input Contract via build_ai_input(), which
+       enforces the confirmed-only gate AND requires a non-empty,
+       resolved policy_context (see engine/ai_input.py).
+    3. Runs the deterministic explainer.
+
+    A registry can be passed in (e.g. one already loaded once by the
+    caller); otherwise one is loaded fresh from data_dir (defaults to
+    the project's data/ directory, same convention as run_audit()).
+
+    If a finding's policy reference doesn't resolve in the registry,
+    or resolves to nothing, that finding is BLOCKED (raises) rather
+    than silently explained with no policy grounding -- this must
+    never be caught and skipped silently, since a finding reaching
+    this stage is expected to already have a valid, registry-backed
+    policy reference from Stage 1.
     """
+
+    if registry is None:
+        registry = load_policy_registry(
+            Path(data_dir) if data_dir is not None else DATA_DIR
+        )
 
     explanations: list[dict[str, Any]] = []
 
     for finding in findings:
 
+        policy_context = retrieve_for_finding(
+            finding=finding,
+            registry=registry,
+        )
+
         ai_input = build_ai_input(
-            finding
+            finding,
+            policy_context=policy_context,
         )
 
         explanation = explain_finding(

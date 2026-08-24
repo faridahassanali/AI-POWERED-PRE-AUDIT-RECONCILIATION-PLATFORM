@@ -3,28 +3,28 @@ Supabase Persistence Layer.
 
 Functions to write pipeline artifacts to Supabase:
 
-    - write_audit_run()      -> public.audit_runs
-    - write_findings()       -> public.findings
-    - write_finding_review() -> public.finding_reviews
+    - write_audit_run()          -> public.audit_runs
+    - write_findings()           -> public.findings
+    - write_finding_review()     -> public.finding_reviews
+    - write_audit_evaluation()   -> public.audit_evaluations
+    - write_finding_explanation()-> public.finding_explanations
+    - write_ai_output()          -> public.ai_outputs
 
-This module is intentionally separate from the deterministic
-audit pipeline.
-
-The audit pipeline can run without Supabase.
-
-The backend/orchestrator can explicitly call these functions
-when persistence is required.
+Design principle preserved
+---------------------------
+The deterministic audit pipeline must keep working with ZERO
+Supabase dependency (see test_ai_layer_must_not_be_required_for_
+deterministic_audit in tests/test_pre_ai_layer.py). This module is
+meant to be called explicitly by whatever orchestrates persistence
+(engine.audit_orchestration, app.py) — never imported by
+engine.audit_pipeline itself.
 
 Credentials
 -----------
-Reads:
-
-    SUPABASE_URL
-    SUPABASE_KEY
-
-from the environment.
-
-The SUPABASE_KEY used by this project is the service-role key.
+Reads SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from the
+environment. The service_role key is required (not the anon key):
+RLS is enabled on every table with no policies defined yet, so only
+service_role can currently read/write.
 """
 
 from __future__ import annotations
@@ -32,6 +32,11 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, is_dataclass
 from typing import Any
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional development helper
+    load_dotenv = None
 
 try:
     from supabase import create_client, Client
@@ -55,6 +60,9 @@ def get_supabase_client() -> "Client":
     Raises PersistenceNotConfigured if the Supabase package is missing
     or the required environment variables are not configured.
     """
+
+    if load_dotenv is not None:
+        load_dotenv()
 
     if create_client is None:
         raise PersistenceNotConfigured(
@@ -181,6 +189,98 @@ def _finding_review_row(
     }
 
 
+def _finding_explanation_row(
+    explanation: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build the public.finding_explanations row from the output of
+    engine.finding_explainer.explain_finding() (the deterministic,
+    template-based Stage 2 explanation -- NOT the LLM explanation,
+    which goes to public.ai_outputs via _ai_output_row() instead).
+
+    explain_finding() only accepts CONFIRMED findings, so
+    finding_status here will always be "CONFIRMED" -- included as-is
+    rather than hardcoded, so the row always reflects exactly what
+    the explainer actually saw.
+    """
+    return {
+        "finding_id": explanation["finding_id"],
+        "audit_run_id": explanation["audit_run_id"],
+        "control_id": explanation["control_id"],
+        "customer_id": explanation.get("customer_id"),
+        "severity": explanation["severity"],
+        "assessment_status": explanation["assessment_status"],
+        "finding_status": explanation["finding_status"],
+        "summary": explanation["summary"],
+        "expected_condition": explanation["expected_condition"],
+        "observed_condition": explanation["observed_condition"],
+        "evidence": explanation.get("evidence", {}),
+        "policy_references": explanation.get("policy_references", []),
+        "review_action": explanation.get("review_action"),
+    }
+
+
+def _ai_output_row(
+    finding: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build the public.ai_outputs row for a finding that has already
+    had ai_explanation/ai_recommendation attached (by
+    engine.ai_explanation_pipeline.generate_ai_explanation_for_finding()).
+
+    model_name / retrieved_policy_context are read from the
+    underscore-prefixed keys that generate_ai_explanation_for_finding()
+    stashes on the finding for this exact purpose. They are NOT part
+    of the finding_schema.json contract and are never sent to
+    write_findings()/_finding_row() -- purely an internal handoff to
+    this function.
+    """
+    return {
+        "finding_id": finding["finding_id"],
+        "audit_run_id": finding["audit_run_id"],
+        "ai_explanation": finding.get("ai_explanation"),
+        "ai_recommendation": finding.get("ai_recommendation"),
+        "model_name": finding.get("_ai_model_used"),
+        "prompt_version": finding.get("_ai_prompt_version", "v1"),
+        "retrieved_policy_context": finding.get("_ai_policy_context", []),
+    }
+
+
+def _evaluation_to_row(
+    evaluation: Any,
+    audit_run_id: str,
+) -> dict[str, Any]:
+    """Normalize an evaluation object into the audit_evaluations DB row."""
+    if is_dataclass(evaluation):
+        evaluation = asdict(evaluation)
+    elif isinstance(evaluation, dict):
+        evaluation = dict(evaluation)
+    else:
+        raise TypeError(
+            f"Unsupported evaluation type: {type(evaluation)!r}"
+        )
+
+    evaluation_run_id = evaluation.get("audit_run_id")
+
+    if evaluation_run_id is not None and evaluation_run_id != audit_run_id:
+        raise ValueError(
+            "Evaluation audit_run_id does not match the audit run."
+        )
+
+    return {
+        "audit_run_id": audit_run_id,
+        "true_positives": evaluation.get("true_positives", 0),
+        "false_positives": evaluation.get("false_positives", 0),
+        "false_negatives": evaluation.get("false_negatives", 0),
+        "precision": evaluation.get("precision"),
+        "recall": evaluation.get("recall"),
+        # EvaluationResult's real field is "f1_score" -- fall back to
+        # "f1" too in case a plain dict ever uses the shorter key.
+        "f1_score": evaluation.get("f1_score", evaluation.get("f1")),
+        "report": evaluation.get("report"),
+    }
+
+
 # =====================================================================
 # WRITE FUNCTIONS
 # =====================================================================
@@ -226,7 +326,16 @@ def write_findings(
     """
     Upsert findings into public.findings.
 
-    Does nothing when findings is empty.
+    Upsert on finding_id so the SAME function covers both:
+      - the first write, right after the deterministic stage
+        (finding_status == "REVIEW")
+      - the re-write after a human review decision
+        (finding_status == "CONFIRMED" / "REJECTED")
+      - the re-write after an AI explanation is attached
+        (ai_explanation / ai_recommendation populated)
+
+    Does nothing (returns []) if findings is empty — callers don't
+    need to guard against an empty list themselves.
     """
 
     if not findings:
@@ -277,5 +386,100 @@ def write_finding_review(
         .insert(row)
         .execute()
     )
+    return response.data
 
+
+def write_audit_evaluation(
+    evaluation: Any,
+    audit_run_id: str,
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Upsert the ground-truth evaluation metrics (TP/FP/FN,
+    precision/recall/F1) for one audit run into
+    public.audit_evaluations.
+
+    Accepts either the EvaluationResult dataclass
+    (engine.ground_truth_evaluator) or an equivalent plain dict.
+    """
+
+    if not audit_run_id:
+        raise ValueError("audit_run_id is required.")
+
+    client = client or get_supabase_client()
+    row = _evaluation_to_row(evaluation, audit_run_id)
+
+    response = (
+        client.table("audit_evaluations")
+        .upsert(row, on_conflict="audit_run_id")
+        .execute()
+    )
+
+    return response.data
+
+
+def write_finding_explanation(
+    explanation: dict[str, Any],
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Upsert one row into public.finding_explanations.
+
+    Call this with the output of
+    engine.finding_explainer.explain_finding() -- the deterministic,
+    template-based Stage 2 explanation (no LLM, cannot hallucinate
+    because it only reformats an already-CONFIRMED finding).
+
+    Upsert on finding_id (matches the table's `unique (finding_id)`
+    constraint) so this is safe to call again if the explanation is
+    ever regenerated for the same finding.
+
+    This is a DIFFERENT artifact from public.ai_outputs -- the LLM's
+    grounded narrative explanation/recommendation. Both may exist for
+    the same CONFIRMED finding; they answer different questions
+    (deterministic audit trail vs. AI-generated narrative).
+    """
+
+    client = client or get_supabase_client()
+    row = _finding_explanation_row(explanation)
+
+    response = (
+        client.table("finding_explanations")
+        .upsert(row, on_conflict="finding_id")
+        .execute()
+    )
+    return response.data
+
+
+def write_ai_output(
+    finding: dict[str, Any],
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Insert one row into public.ai_outputs.
+
+    Call this AFTER
+    engine.ai_explanation_pipeline.generate_ai_explanation_for_finding()
+    has already succeeded and attached ai_explanation /
+    ai_recommendation (and the internal _ai_* metadata keys) to
+    `finding`. Raises ValueError if the finding has no
+    ai_explanation yet, since an empty ai_outputs row would be
+    meaningless.
+    """
+
+    if not finding.get("ai_explanation"):
+        raise ValueError(
+            "Finding has no ai_explanation to persist. Call this "
+            "only after generate_ai_explanation_for_finding() has "
+            "succeeded."
+        )
+
+    client = client or get_supabase_client()
+    row = _ai_output_row(finding)
+
+    response = (
+        client.table("ai_outputs")
+        .insert(row)
+        .execute()
+    )
     return response.data

@@ -690,6 +690,48 @@ def resolve_policy_references(
             ]
 
         # -------------------------------------------------------------
+        # SECTION-ONLY REFERENCE (version not supplied)
+        #
+        # Still filter by the section that WAS given -- a partial
+        # reference should narrow down, not fall all the way back to
+        # "every section of this policy".
+        # -------------------------------------------------------------
+
+        elif section:
+
+            matches = [
+                chunk
+                for chunk in chunks
+                if (
+                    chunk["policy_id"]
+                    == policy_id
+                    and chunk["section"]
+                    .strip()
+                    .lower()
+                    == section
+                    .strip()
+                    .lower()
+                )
+            ]
+
+        # -------------------------------------------------------------
+        # VERSION-ONLY REFERENCE (section not supplied)
+        # -------------------------------------------------------------
+
+        elif version:
+
+            matches = [
+                chunk
+                for chunk in chunks
+                if (
+                    chunk["policy_id"]
+                    == policy_id
+                    and chunk["version"]
+                    == version
+                )
+            ]
+
+        # -------------------------------------------------------------
         # POLICY-ID-ONLY REFERENCE
         #
         # IMPORTANT:
@@ -723,6 +765,26 @@ def resolve_policy_references(
                     f"{policy_id} "
                     f"version {version} "
                     f"section '{section}'."
+                )
+
+            if section:
+
+                raise ValueError(
+                    "Policy reference could not be "
+                    "resolved in the Policy Registry: "
+                    f"{policy_id} "
+                    f"section '{section}' "
+                    "(no version specified)."
+                )
+
+            if version:
+
+                raise ValueError(
+                    "Policy reference could not be "
+                    "resolved in the Policy Registry: "
+                    f"{policy_id} "
+                    f"version {version} "
+                    "(no section specified)."
                 )
 
             raise ValueError(
@@ -909,6 +971,19 @@ def retrieve_for_finding(
     # FALLBACK PATH
     #
     # Only used when the finding does not contain the field at all.
+    #
+    # Tries semantic (embeddings/Qdrant) retrieval first, since it
+    # generally beats plain lexical token-overlap for this kind of
+    # unlinked/generic query -- especially for multilingual content
+    # (e.g. Arabic policy text). Falls back to lexical retrieval if
+    # Qdrant/embeddings aren't available or return nothing, so this
+    # never hard-fails just because a Qdrant server isn't running.
+    #
+    # This is intentionally scoped to the fallback branch only. The
+    # primary path above (explicit policy_references) NEVER goes
+    # through semantic search -- an audit finding must stay grounded
+    # to the exact policy it names, not a similar one a vector search
+    # happened to surface.
     # -------------------------------------------------------------
 
     query = _build_finding_query(
@@ -918,11 +993,70 @@ def retrieve_for_finding(
     if not query.strip():
         return []
 
+    semantic_results = _try_semantic_fallback(
+        query=query,
+        top_k=top_k,
+    )
+
+    if semantic_results:
+        return semantic_results
+
     return retrieve_policy(
         query=query,
         registry=registry,
         top_k=top_k,
     )
+
+
+# =====================================================================
+# SEMANTIC (EMBEDDINGS/QDRANT) FALLBACK
+# =====================================================================
+
+def _try_semantic_fallback(
+    query: str,
+    top_k: int = 3,
+) -> list[dict[str, Any]]:
+    """
+    Best-effort semantic retrieval via RAG.vector_store (Qdrant +
+    sentence-transformer embeddings from RAG/embedder.py, RAG/chunker.py).
+
+    Used ONLY by the lexical-fallback branch of retrieve_for_finding()
+    -- never for findings with explicit policy_references, which are
+    always resolved exactly against the registry instead.
+
+    Returns [] rather than raising if Qdrant isn't running, the
+    collection hasn't been indexed yet, or the embedding model can't
+    be loaded -- so callers without that infra transparently get the
+    lexical fallback instead of a crash. This is deliberate: this
+    function must never be the reason retrieve_for_finding() fails.
+    """
+
+    try:
+        from RAG.vector_store import retrieve_policy_context
+    except ImportError:
+        return []
+
+    try:
+        results = retrieve_policy_context(
+            query,
+            top_k=top_k,
+        )
+    except Exception:
+        # Qdrant unreachable, collection not indexed, embedding model
+        # missing, etc. -- any of these should fall back silently.
+        return []
+
+    # Normalize to the same shape retrieve_policy() returns
+    # (relevance_score), so callers don't need to branch on which
+    # fallback actually served the request.
+    normalized: list[dict[str, Any]] = []
+
+    for result in results:
+        normalized_result = dict(result)
+        normalized_result["relevance_score"] = result.get("score", 0.0)
+        normalized.append(normalized_result)
+
+    return normalized
 
 
 # =====================================================================
