@@ -255,3 +255,25 @@ def test_write_finding_review_shapes_row_correctly():
     assert row["new_status"] == "CONFIRMED"
     assert row["reviewed_by"] == "Sherine"
     assert row["reviewer_notes"] == "Looks right."
+    
+def test_get_client_does_not_load_dotenv_implicitly(monkeypatch):
+    """
+    Persistence configuration must come only from runtime environment
+    variables.
+
+    This prevents a local .env file from silently changing the
+    configured/not-configured state of the persistence layer.
+    """
+
+    monkeypatch.delenv(
+        "SUPABASE_URL",
+        raising=False,
+    )
+
+    monkeypatch.delenv(
+        "SUPABASE_SERVICE_ROLE_KEY",
+        raising=False,
+    )
+
+    with pytest.raises(PersistenceNotConfigured):
+        get_supabase_client()
