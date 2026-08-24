@@ -8,6 +8,7 @@ pytest>=7.0
 # RAG + LLM — only needed later (Step 7: policy retrieval + explanation generation)
 qdrant-client>=1.9
 sentence-transformers>=2.2
+<<<<<<< HEAD
 requests>=2.31
 python-dotenv>=1.0
 streamlit>=1.60
@@ -18,3 +19,12 @@ fastapi>=0.115
 uvicorn>=0.30
 supabase>=2.0
 python-dotenv>=1.0
+=======
+fastapi>=0.115
+uvicorn>=0.30
+requests>=2.31
+python-dotenv>=1.0
+streamlit>=1.60
+supabase>=2.0
+
+>>>>>>> 2a27f09e3dd34ee31ecef40371c457b968e1e289

@@ -3,12 +3,21 @@ Supabase Persistence Layer.
 
 Functions to write pipeline artifacts to Supabase:
 
+<<<<<<< HEAD
     - write_audit_run()      -> public.audit_runs
     - write_findings()       -> public.findings
     - write_finding_review() -> public.finding_reviews
 
 STATUS: skeleton only. NOT wired into engine.audit_pipeline or
 engine.finding_review yet. Nothing here is called automatically.
+=======
+    - write_audit_run()          -> public.audit_runs
+    - write_findings()           -> public.findings
+    - write_finding_review()     -> public.finding_reviews
+    - write_audit_evaluation()   -> public.audit_evaluations
+    - write_finding_explanation()-> public.finding_explanations
+    - write_ai_output()          -> public.ai_outputs
+>>>>>>> 2a27f09e3dd34ee31ecef40371c457b968e1e289
 
 Design principle preserved
 ---------------------------
@@ -23,8 +32,13 @@ Credentials
 -----------
 Reads SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from the
 environment. The service_role key is required (not the anon key):
+<<<<<<< HEAD
 RLS is enabled on every table in migration 001 with no policies
 defined yet, so only service_role can currently read/write.
+=======
+RLS is enabled on every table with no policies defined yet, so only
+service_role can currently read/write.
+>>>>>>> 2a27f09e3dd34ee31ecef40371c457b968e1e289
 """
 
 from __future__ import annotations
@@ -384,6 +398,37 @@ def write_finding_review(
         .insert(row)
         .execute()
     )
+<<<<<<< HEAD
+=======
+    return response.data
+
+
+def write_audit_evaluation(
+    evaluation: Any,
+    audit_run_id: str,
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Upsert the ground-truth evaluation metrics (TP/FP/FN,
+    precision/recall/F1) for one audit run into
+    public.audit_evaluations.
+
+    Accepts either the EvaluationResult dataclass
+    (engine.ground_truth_evaluator) or an equivalent plain dict.
+    """
+
+    if not audit_run_id:
+        raise ValueError("audit_run_id is required.")
+
+    client = client or get_supabase_client()
+    row = _evaluation_to_row(evaluation, audit_run_id)
+
+    response = (
+        client.table("audit_evaluations")
+        .upsert(row, on_conflict="audit_run_id")
+        .execute()
+    )
+>>>>>>> 2a27f09e3dd34ee31ecef40371c457b968e1e289
 
     return response.data
 
@@ -452,4 +497,8 @@ def write_ai_output(
         .insert(row)
         .execute()
     )
+<<<<<<< HEAD
     return response.data
+=======
+    return response.data
+>>>>>>> 2a27f09e3dd34ee31ecef40371c457b968e1e289
