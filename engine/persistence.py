@@ -7,24 +7,24 @@ Functions to write pipeline artifacts to Supabase:
     - write_findings()       -> public.findings
     - write_finding_review() -> public.finding_reviews
 
-This module is intentionally separate from the deterministic
-audit pipeline.
+STATUS: skeleton only. NOT wired into engine.audit_pipeline or
+engine.finding_review yet. Nothing here is called automatically.
 
-The audit pipeline can run without Supabase.
-
-The backend/orchestrator can explicitly call these functions
-when persistence is required.
+Design principle preserved
+---------------------------
+The deterministic audit pipeline must keep working with ZERO
+Supabase dependency (see test_ai_layer_must_not_be_required_for_
+deterministic_audit in tests/test_pre_ai_layer.py). This module is
+meant to be called explicitly by whatever orchestrates persistence
+later (the backend API, most likely) — never imported by
+engine.audit_pipeline itself.
 
 Credentials
 -----------
-Reads:
-
-    SUPABASE_URL
-    SUPABASE_KEY
-
-from the environment.
-
-The SUPABASE_KEY used by this project is the service-role key.
+Reads SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from the
+environment. The service_role key is required (not the anon key):
+RLS is enabled on every table in migration 001 with no policies
+defined yet, so only service_role can currently read/write.
 """
 
 from __future__ import annotations
@@ -181,6 +181,98 @@ def _finding_review_row(
     }
 
 
+def _finding_explanation_row(
+    explanation: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build the public.finding_explanations row from the output of
+    engine.finding_explainer.explain_finding() (the deterministic,
+    template-based Stage 2 explanation -- NOT the LLM explanation,
+    which goes to public.ai_outputs via _ai_output_row() instead).
+
+    explain_finding() only accepts CONFIRMED findings, so
+    finding_status here will always be "CONFIRMED" -- included as-is
+    rather than hardcoded, so the row always reflects exactly what
+    the explainer actually saw.
+    """
+    return {
+        "finding_id": explanation["finding_id"],
+        "audit_run_id": explanation["audit_run_id"],
+        "control_id": explanation["control_id"],
+        "customer_id": explanation.get("customer_id"),
+        "severity": explanation["severity"],
+        "assessment_status": explanation["assessment_status"],
+        "finding_status": explanation["finding_status"],
+        "summary": explanation["summary"],
+        "expected_condition": explanation["expected_condition"],
+        "observed_condition": explanation["observed_condition"],
+        "evidence": explanation.get("evidence", {}),
+        "policy_references": explanation.get("policy_references", []),
+        "review_action": explanation.get("review_action"),
+    }
+
+
+def _ai_output_row(
+    finding: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build the public.ai_outputs row for a finding that has already
+    had ai_explanation/ai_recommendation attached (by
+    engine.ai_explanation_pipeline.generate_ai_explanation_for_finding()).
+
+    model_name / retrieved_policy_context are read from the
+    underscore-prefixed keys that generate_ai_explanation_for_finding()
+    stashes on the finding for this exact purpose. They are NOT part
+    of the finding_schema.json contract and are never sent to
+    write_findings()/_finding_row() -- purely an internal handoff to
+    this function.
+    """
+    return {
+        "finding_id": finding["finding_id"],
+        "audit_run_id": finding["audit_run_id"],
+        "ai_explanation": finding.get("ai_explanation"),
+        "ai_recommendation": finding.get("ai_recommendation"),
+        "model_name": finding.get("_ai_model_used"),
+        "prompt_version": finding.get("_ai_prompt_version", "v1"),
+        "retrieved_policy_context": finding.get("_ai_policy_context", []),
+    }
+
+
+def _evaluation_to_row(
+    evaluation: Any,
+    audit_run_id: str,
+) -> dict[str, Any]:
+    """Normalize an evaluation object into the audit_evaluations DB row."""
+    if is_dataclass(evaluation):
+        evaluation = asdict(evaluation)
+    elif isinstance(evaluation, dict):
+        evaluation = dict(evaluation)
+    else:
+        raise TypeError(
+            f"Unsupported evaluation type: {type(evaluation)!r}"
+        )
+
+    evaluation_run_id = evaluation.get("audit_run_id")
+
+    if evaluation_run_id is not None and evaluation_run_id != audit_run_id:
+        raise ValueError(
+            "Evaluation audit_run_id does not match the audit run."
+        )
+
+    return {
+        "audit_run_id": audit_run_id,
+        "true_positives": evaluation.get("true_positives", 0),
+        "false_positives": evaluation.get("false_positives", 0),
+        "false_negatives": evaluation.get("false_negatives", 0),
+        "precision": evaluation.get("precision"),
+        "recall": evaluation.get("recall"),
+        # EvaluationResult's real field is "f1_score" -- fall back to
+        # "f1" too in case a plain dict ever uses the shorter key.
+        "f1_score": evaluation.get("f1_score", evaluation.get("f1")),
+        "report": evaluation.get("report"),
+    }
+
+
 # =====================================================================
 # WRITE FUNCTIONS
 # =====================================================================
@@ -226,7 +318,14 @@ def write_findings(
     """
     Upsert findings into public.findings.
 
-    Does nothing when findings is empty.
+    Upsert on finding_id so the SAME function covers both:
+      - the first write, right after the deterministic stage
+        (finding_status == "REVIEW")
+      - the re-write after a human review decision
+        (finding_status == "CONFIRMED" / "REJECTED")
+
+    Does nothing (returns []) if findings is empty — callers don't
+    need to guard against an empty list themselves.
     """
 
     if not findings:
