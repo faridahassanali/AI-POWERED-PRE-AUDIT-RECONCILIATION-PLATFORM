@@ -58,11 +58,12 @@ from engine.normalization import (
 )
 
 from engine.finding_validator import (
+    load_finding_schema,
     validate_finding_or_raise,
 )
 
 from engine.finding_integrity import (
-    validate_unique_findings,
+    validate_unique_findings_or_raise,
 )
 
 from engine.ground_truth_evaluator import (
@@ -156,13 +157,71 @@ def _validate_generated_findings(
     """
     Validate every generated finding against
     the finding schema.
+
+    FIX (perf): the schema is now loaded from disk and compiled into
+    a validator ONCE per audit run, not once per finding. Previously
+    each call to validate_finding_or_raise(finding) with no schema
+    argument re-read finding_schema.json and rebuilt the
+    Draft7Validator from scratch for every single finding -- harmless
+    for a handful of findings, but unnecessary disk I/O that scales
+    linearly with the size of the run.
     """
+
+    schema = load_finding_schema()
 
     for finding in findings:
 
         validate_finding_or_raise(
-            finding
+            finding,
+            schema=schema,
         )
+
+
+def _validate_findings_share_audit_run_id(
+    findings: list[dict[str, Any]],
+    audit_run_id: str,
+) -> None:
+    """
+    Defensive integrity check (FIX, replaces a previous silent
+    overwrite bug).
+
+    Previously, individual controls let build_finding() default
+    audit_run_id to a fresh random value per finding, so findings
+    from the same run had no shared identifier. That was masked here
+    by unconditionally overwriting finding["audit_run_id"] on every
+    finding after generation -- which hid the bug for this pipeline
+    path but did nothing for any other caller of run_all_controls()
+    or the individual control functions (e.g. tests, future direct
+    callers).
+
+    The root cause is now fixed in engine.controls / finding_builder:
+    audit_run_id is a required argument threaded through every
+    control call, and this pipeline passes its own audit_run_id
+    (created in step 1) straight into run_all_controls().
+
+    This function no longer overwrites anything. It only asserts the
+    contract held -- if any finding comes back with a different or
+    missing audit_run_id, that means a control forgot to thread the
+    id through, and we want a loud failure here, not another silent
+    patch.
+    """
+
+    for finding in findings:
+
+        found_id = finding.get("audit_run_id")
+
+        if found_id != audit_run_id:
+
+            raise ValueError(
+                "Finding integrity violation: expected all "
+                f"generated findings to carry audit_run_id "
+                f"'{audit_run_id}', but got '{found_id}' for "
+                f"finding {finding.get('finding_id')!r} "
+                f"(control_id={finding.get('control_id')!r}). "
+                "This means a control did not thread audit_run_id "
+                "through to build_finding() -- fix the control, "
+                "do not patch the finding here."
+            )
 
 
 def _create_audit_trace(
@@ -267,18 +326,30 @@ def run_audit(
     # 6. RUN DETERMINISTIC CONTROLS
     # =========================================================
 
+    # FIX: pass the run's own audit_run_id straight into the
+    # controls layer, instead of letting each control/build_finding
+    # call invent its own id and patching it after the fact (see
+    # _validate_findings_share_audit_run_id below).
     generated_findings = run_all_controls(
         unified=unified,
         tables=normalized_tables,
+        audit_run_id=audit_run_id,
     )
 
     # =========================================================
-    # 7. ATTACH AUDIT RUN ID
+    # 7. VERIFY AUDIT RUN ID INTEGRITY
     # =========================================================
 
-    for finding in generated_findings:
-
-        finding["audit_run_id"] = audit_run_id
+    # FIX: this step used to unconditionally overwrite
+    # finding["audit_run_id"] for every finding here. That silently
+    # masked controls that weren't given the run's audit_run_id in
+    # the first place. Now that engine.controls requires and threads
+    # audit_run_id explicitly, this step only verifies the contract
+    # held -- it raises loudly instead of patching quietly.
+    _validate_findings_share_audit_run_id(
+        generated_findings,
+        audit_run_id,
+    )
 
     # =========================================================
     # 8. FINDING VALIDATION
@@ -292,7 +363,13 @@ def run_audit(
     # 9. FINDING INTEGRITY
     # =========================================================
 
-    validate_unique_findings(
+    # FIX (bug): this used to call validate_unique_findings(), which
+    # returns a bool that was never checked -- duplicate findings
+    # could pass straight through the pipeline with no error and no
+    # warning. validate_unique_findings_or_raise() raises
+    # FindingIntegrityError instead, so it cannot be silently ignored
+    # the way a discarded return value could.
+    validate_unique_findings_or_raise(
         generated_findings
     )
 

@@ -26,10 +26,15 @@ RECON_FIELDS = [
 
 def reconciliation_001(
     tables: dict[str, pd.DataFrame],
+    audit_run_id: str,
 ) -> list[dict]:
     """
     Reconcile the approved source population and processing data
     against the final wallet audit report.
+
+    `audit_run_id` is REQUIRED and must be the same id used for every
+    other control in the same audit run (see controls.run_all_controls),
+    so all findings from one run share one audit_run_id.
 
     Returns one RECON_001 finding per customer with one or more
     mismatched fields.
@@ -218,6 +223,7 @@ def reconciliation_001(
                     "section": "Requirements",
                 }
             ],
+            audit_run_id=audit_run_id,
         )
 
         findings.append(finding)

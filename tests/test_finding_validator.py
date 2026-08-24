@@ -315,3 +315,23 @@ def test_multiple_validation_errors_are_reported(valid_finding):
     assert any("control_id" in error for error in errors)
     assert any("severity" in error for error in errors)
     assert any("assessment_status" in error for error in errors)
+from jsonschema.exceptions import SchemaError
+
+from engine.finding_validator import create_validator
+
+
+def test_create_validator_rejects_invalid_schema():
+    """
+    create_validator must catch structurally invalid schemas
+    at creation time, not defer the failure to a later call
+    to iter_errors/validate. A malformed schema (e.g. an
+    unsupported 'type' value) should raise SchemaError with
+    a clear message pointing at the schema itself.
+    """
+
+    invalid_schema = {
+        "type": "not_a_real_json_schema_type",
+    }
+
+    with pytest.raises(SchemaError):
+        create_validator(invalid_schema)    

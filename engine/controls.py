@@ -13,13 +13,13 @@ import warnings
 
 try:
     from .reconciliation import reconciliation_001
-    from .finding_builder import build_finding
+    from .finding_builder import build_finding, generate_audit_run_id
 except ImportError:
     from reconciliation import reconciliation_001
-    from finding_builder import build_finding
+    from finding_builder import build_finding, generate_audit_run_id
 
 
-def screening_001(record):
+def screening_001(record, audit_run_id):
     """
     Evaluate SCREENING_001 for one customer record.
 
@@ -80,6 +80,7 @@ def screening_001(record):
                     "section": "Requirements",
                 }
             ],
+            audit_run_id=audit_run_id,
         )
 
     # CLEAR screening with evidence = PASS
@@ -126,10 +127,11 @@ def screening_001(record):
                 "section": "Requirements",
             }
         ],
+        audit_run_id=audit_run_id,
     )
 
 
-def risk_001(record):
+def risk_001(record, audit_run_id):
     """
     Evaluate RISK_001 for one customer record.
 
@@ -215,10 +217,11 @@ def risk_001(record):
                 "section": "Requirements",
             }
         ],
+        audit_run_id=audit_run_id,
     )
 
 
-def arabic_name_001(record):
+def arabic_name_001(record, audit_run_id):
     """
     Evaluate ARABIC_NAME_001.
 
@@ -267,10 +270,11 @@ def arabic_name_001(record):
                 "section": "Requirements",
             }
         ],
+        audit_run_id=audit_run_id,
     )
 
 
-def dormant_001(record):
+def dormant_001(record, audit_run_id):
     """
     Evaluate DORMANT_001.
 
@@ -346,10 +350,11 @@ def dormant_001(record):
                 "section": "Requirements",
             }
         ],
+        audit_run_id=audit_run_id,
     )
 
 
-def run_all_controls(unified, tables=None):
+def run_all_controls(unified, tables=None, audit_run_id=None):
     """
     Run all implemented controls.
 
@@ -371,7 +376,29 @@ def run_all_controls(unified, tables=None):
     instead, so the omission is visible rather than silent -- it does
     not stop execution, since skipping RECON_001 deliberately is a
     valid use case.
+
+    FIX (bug): `audit_run_id` is now threaded into every control call
+    and into reconciliation_001(), instead of being left to
+    build_finding()'s old (removed) default of a fresh random value
+    per finding. Every finding produced by this run now shares the
+    same audit_run_id, so findings can be grouped and matched back to
+    controls_executed / findings_generated for that run.
+
+    Callers that already own an audit_run_id (e.g.
+    audit_pipeline.run_audit(), which creates one at the start of the
+    run and needs it for the audit trace) MUST pass it in explicitly.
+    The `audit_run_id=None` default here exists only for convenience
+    -- e.g. ad-hoc scripts or tests that call run_all_controls()
+    directly and don't already have a run id to give it. It is NOT
+    meant as a substitute for passing the pipeline's real run id.
+
+    Return type is unchanged (a plain list of findings) so existing
+    callers -- including engine.audit_pipeline.run_audit() -- do not
+    need to change how they unpack the result.
     """
+
+    if audit_run_id is None:
+        audit_run_id = generate_audit_run_id()
 
     findings = []
 
@@ -381,19 +408,19 @@ def run_all_controls(unified, tables=None):
 
     for _, record in unified.iterrows():
 
-        finding = screening_001(record)
+        finding = screening_001(record, audit_run_id)
         if finding is not None:
             findings.append(finding)
 
-        finding = risk_001(record)
+        finding = risk_001(record, audit_run_id)
         if finding is not None:
             findings.append(finding)
 
-        finding = arabic_name_001(record)
+        finding = arabic_name_001(record, audit_run_id)
         if finding is not None:
             findings.append(finding)
 
-        finding = dormant_001(record)
+        finding = dormant_001(record, audit_run_id)
         if finding is not None:
             findings.append(finding)
 
@@ -404,7 +431,8 @@ def run_all_controls(unified, tables=None):
     if tables is not None:
 
         reconciliation_findings = reconciliation_001(
-            tables
+            tables,
+            audit_run_id=audit_run_id,
         )
 
         findings.extend(reconciliation_findings)

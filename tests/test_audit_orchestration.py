@@ -140,3 +140,38 @@ def test_persistence_not_configured_is_the_only_error_treated_as_optional():
     # case PersistenceNotConfigured, not RuntimeError in general (covered
     # by the previous test using a plain RuntimeError).
     assert issubclass(PersistenceNotConfigured, RuntimeError)
+def test_run_audit_and_persist_partial_failure_leaves_orphaned_audit_run():
+    """
+    Documents a real gap in the persistence contract: if a later step
+    (e.g. write_findings) raises after an earlier step (write_audit_run)
+    has already succeeded, the audit_run row is left in Supabase with
+    no matching findings -- and with no status field distinguishing it
+    from a completed run.
+
+    This is NOT a fix (persistence.py / status tracking is Person 2's
+    scope) -- it's an E2E test proving the risk described in the team
+    plan ("audit ma ynfa3sh yzhar COMPLETED lw persistence fail",
+    "partial persistence") is currently real and unguarded.
+    """
+
+    class _PartiallyBrokenClient:
+        def __init__(self):
+            self.calls = []
+
+        def table(self, name):
+            if name == "findings":
+                raise RuntimeError("findings write failed")
+            return _FakeTable(name, self.calls)
+
+    client = _PartiallyBrokenClient()
+
+    with pytest.raises(RuntimeError, match="findings write failed"):
+        run_audit_and_persist(client=client)
+
+    written_tables = {call["table"] for call in client.calls}
+
+    # This assertion is the point of the test: the audit_run row WAS
+    # written before the failure, with no findings and no way for a
+    # downstream reader to know this run is incomplete.
+    assert "audit_runs" in written_tables
+    assert "findings" not in written_tables
