@@ -34,6 +34,11 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional development helper
+    load_dotenv = None
+
+try:
     from supabase import create_client, Client
 except ImportError:  # pragma: no cover - exercised when dependency missing
     create_client = None
@@ -57,6 +62,9 @@ def get_supabase_client() -> "Client":
     Callers that want the pipeline to keep running without a database
     should catch this and skip persistence, not let it propagate.
     """
+
+    if load_dotenv is not None:
+        load_dotenv()
 
     if create_client is None:
         raise PersistenceNotConfigured(

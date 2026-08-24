@@ -14,8 +14,9 @@ SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY required.
 
 This module sits on top of both instead of merging them: it calls
 run_audit() first (unchanged, still Supabase-free), and only then
-attempts to persist the result -- the audit run, its findings, and
-the ground-truth evaluation metrics (TP/FP/FN, precision/recall/F1).
+attempts to persist the result -- its versioned policies, audit run,
+findings, and ground-truth evaluation metrics (TP/FP/FN,
+precision/recall/F1).
 If Supabase isn't configured, the persistence step is skipped rather
 than raised -- the pipeline result is still returned so callers who
 don't care about Supabase never see a different failure mode than
@@ -31,10 +32,14 @@ from typing import Any
 from engine.audit_pipeline import AuditPipelineResult, run_audit
 from engine.persistence import (
     PersistenceNotConfigured,
+    get_supabase_client,
     write_audit_evaluation,
     write_audit_run,
     write_findings,
 )
+from engine.policy_persistence import sync_policy_registry
+from engine.policy_registry import load_policy_registry
+from engine.data_loader import DATA_DIR
 
 
 @dataclass
@@ -86,6 +91,8 @@ def run_audit_and_persist(
     pipeline_result = run_audit(data_dir=data_dir)
 
     try:
+        client = client or get_supabase_client()
+        sync_policy_registry(load_policy_registry(DATA_DIR), client=client)
         write_audit_run(pipeline_result.audit_trace, client=client)
         write_findings(pipeline_result.generated_findings, client=client)
         write_audit_evaluation(

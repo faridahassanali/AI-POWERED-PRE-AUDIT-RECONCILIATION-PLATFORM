@@ -106,6 +106,8 @@ def test_run_audit_and_persist_writes_audit_run_and_findings_with_fake_client():
     assert result.persistence.reason is None
 
     tables_written = {call["table"] for call in client.calls}
+    assert "policies" in tables_written
+    assert "policy_versions" in tables_written
     assert "audit_runs" in tables_written
     assert "findings" in tables_written
 
