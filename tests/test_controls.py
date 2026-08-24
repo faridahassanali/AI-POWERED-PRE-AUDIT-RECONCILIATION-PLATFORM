@@ -36,6 +36,18 @@ from engine.data_loader import (
     load_data,
     build_unified_customer_record,
 )
+
+
+# audit_run_id is now a required argument for every individual control
+# function and for reconciliation_001() (see engine/controls.py and
+# engine/finding_builder.py) -- a real run must give every finding the
+# SAME audit_run_id, so it can no longer be invented per finding.
+# Unit tests below call the controls directly (bypassing
+# run_all_controls, which would generate one for you), so they need
+# to supply one explicitly.
+TEST_AUDIT_RUN_ID = "RUN-TEST-0001"
+
+
 def make_record(**overrides) -> pd.Series:
     """Build a minimal customer record for SCREENING_001, with sensible
     defaults that PASS the control unless overridden."""
@@ -54,43 +66,44 @@ def make_record(**overrides) -> pd.Series:
 
 def test_clear_screening_with_evidence_passes():
     record = make_record()
-    assert screening_001(record) is None
+    assert screening_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_wallet_not_opened_is_skipped_even_if_screening_bad():
     """The control only applies to opened wallets — anything else is out of scope."""
     record = make_record(wallet_status="PENDING", screening_status="HIGH_RISK")
-    assert screening_001(record) is None
+    assert screening_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_high_risk_screening_is_critical():
     record = make_record(screening_status="HIGH_RISK")
-    finding = screening_001(record)
+    finding = screening_001(record, TEST_AUDIT_RUN_ID)
     assert finding is not None
     assert finding["severity"] == "CRITICAL"
     assert finding["control_id"] == "SCREENING_001"
     assert finding["assessment_status"] == "FAIL"
     assert finding["finding_status"] == "REVIEW"
+    assert finding["audit_run_id"] == TEST_AUDIT_RUN_ID
 
 
 @pytest.mark.parametrize("status", ["PENDING", "NO_MATCH"])
 def test_non_clear_non_high_risk_is_high_severity(status):
     record = make_record(screening_status=status)
-    finding = screening_001(record)
+    finding = screening_001(record, TEST_AUDIT_RUN_ID)
     assert finding is not None
     assert finding["severity"] == "HIGH"
 
 
 def test_missing_evidence_fails_even_if_status_clear():
     record = make_record(screening_evidence_present="False")
-    finding = screening_001(record)
+    finding = screening_001(record, TEST_AUDIT_RUN_ID)
     assert finding is not None
     assert finding["severity"] == "HIGH"
 
 
 def test_finding_contains_required_fields():
     record = make_record(screening_status="HIGH_RISK")
-    finding = screening_001(record)
+    finding = screening_001(record, TEST_AUDIT_RUN_ID)
     required_keys = {
         "control_id", "customer_id", "severity", "assessment_status",
         "finding_status", "expected", "actual", "evidence", "policy_references",
@@ -110,7 +123,7 @@ def test_high_risk_opened_without_exception_fails():
         risk_exception_reviewer="",
     )
 
-    finding = risk_001(record)
+    finding = risk_001(record, TEST_AUDIT_RUN_ID)
 
     assert finding is not None
     assert finding["control_id"] == "RISK_001"
@@ -128,7 +141,7 @@ def test_high_risk_opened_with_valid_exception_passes():
         risk_exception_reviewer="Reviewer1",
     )
 
-    assert risk_001(record) is None
+    assert risk_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_non_high_risk_is_not_applicable():
@@ -138,7 +151,7 @@ def test_non_high_risk_is_not_applicable():
         risk_exception_approved="False",
     )
 
-    assert risk_001(record) is None
+    assert risk_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_high_risk_wallet_not_opened_is_not_applicable():
@@ -148,7 +161,7 @@ def test_high_risk_wallet_not_opened_is_not_applicable():
         risk_exception_approved="False",
     )
 
-    assert risk_001(record) is None   
+    assert risk_001(record, TEST_AUDIT_RUN_ID) is None
     # --- ARABIC_NAME_001 unit tests -------------------------------------
 
 def test_arabic_name_with_arabic_characters_passes():
@@ -157,7 +170,7 @@ def test_arabic_name_with_arabic_characters_passes():
         name_ar="أحمد يوسف",
     )
 
-    assert arabic_name_001(record) is None
+    assert arabic_name_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_empty_arabic_name_fails():
@@ -166,7 +179,7 @@ def test_empty_arabic_name_fails():
         name_ar="",
     )
 
-    finding = arabic_name_001(record)
+    finding = arabic_name_001(record, TEST_AUDIT_RUN_ID)
 
     assert finding is not None
     assert finding["control_id"] == "ARABIC_NAME_001"
@@ -181,7 +194,7 @@ def test_non_arabic_name_fails():
         name_ar="Ahmed Youssef",
     )
 
-    finding = arabic_name_001(record)
+    finding = arabic_name_001(record, TEST_AUDIT_RUN_ID)
 
     assert finding is not None
     assert finding["severity"] == "MEDIUM"
@@ -193,7 +206,7 @@ def test_mixed_arabic_and_english_name_passes():
         name_ar="Ahmed أحمد",
     )
 
-    assert arabic_name_001(record) is None
+    assert arabic_name_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_arabic_name_finding_contains_required_fields():
@@ -202,7 +215,7 @@ def test_arabic_name_finding_contains_required_fields():
         name_ar="Ahmed Youssef",
     )
 
-    finding = arabic_name_001(record)
+    finding = arabic_name_001(record, TEST_AUDIT_RUN_ID)
 
     required_keys = {
         "control_id",
@@ -230,7 +243,7 @@ def test_dormant_opened_completed_passes():
         dormant_handling_status="COMPLETED",
     )
 
-    assert dormant_001(record) is None
+    assert dormant_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_dormant_opened_not_completed_fails():
@@ -242,7 +255,7 @@ def test_dormant_opened_not_completed_fails():
         dormant_handling_status="PENDING",
     )
 
-    finding = dormant_001(record)
+    finding = dormant_001(record, TEST_AUDIT_RUN_ID)
 
     assert finding is not None
     assert finding["control_id"] == "DORMANT_001"
@@ -258,7 +271,7 @@ def test_non_dormant_account_is_not_applicable():
         dormant_handling_status="NOT_REQUIRED",
     )
 
-    assert dormant_001(record) is None
+    assert dormant_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_dormant_wallet_not_opened_is_not_applicable():
@@ -268,7 +281,7 @@ def test_dormant_wallet_not_opened_is_not_applicable():
         dormant_handling_status="PENDING",
     )
 
-    assert dormant_001(record) is None
+    assert dormant_001(record, TEST_AUDIT_RUN_ID) is None
 
 
 def test_dormant_finding_contains_required_fields():
@@ -280,7 +293,7 @@ def test_dormant_finding_contains_required_fields():
         dormant_handling_status="PENDING",
     )
 
-    finding = dormant_001(record)
+    finding = dormant_001(record, TEST_AUDIT_RUN_ID)
 
     required_keys = {
         "control_id",
@@ -519,7 +532,7 @@ def test_recon_001_matches_expected_count(unified_and_expected):
     unified, expected = unified_and_expected
 
     tables = load_data()
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     expected_count = len(
         expected[expected["control_id"] == "RECON_001"]
@@ -532,7 +545,7 @@ def test_recon_001_matches_expected_customer_ids(unified_and_expected):
     unified, expected = unified_and_expected
 
     tables = load_data()
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     my_ids = {
         f["customer_id"]
@@ -554,7 +567,7 @@ def test_recon_001_severity_distribution_matches_expected(
     unified, expected = unified_and_expected
 
     tables = load_data()
-    findings = reconciliation_001(tables)
+    findings = reconciliation_001(tables, audit_run_id=TEST_AUDIT_RUN_ID)
 
     my_counts = pd.Series(
         [f["severity"] for f in findings]

@@ -6,6 +6,7 @@ from engine.ground_truth_evaluator import evaluate_findings
 def test_finding_pipeline_end_to_end():
 
     finding = build_finding(
+        audit_run_id="RUN-TEST00001",
         control_id="SCREENING_001",
         customer_id="CUST100005",
         severity="HIGH",

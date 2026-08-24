@@ -104,7 +104,13 @@ def _normalize_boolean(value: Any) -> Any:
         "0"     -> "False"
 
     Empty values remain empty.
-    Unknown values are preserved after trimming.
+
+    Unrecognized non-empty values raise ValueError. Unlike
+    categorical fields (which intentionally preserve unknown
+    values), a boolean field holding an unexpected value almost
+    always indicates malformed source data (e.g. a typo), and
+    silently passing it through would let corrupted data reach
+    the controls undetected.
     """
 
     if isinstance(value, bool):
@@ -122,8 +128,11 @@ def _normalize_boolean(value: Any) -> Any:
         if normalized in FALSE_VALUES:
             return "False"
 
-        # Do not silently change unexpected values.
-        return value.strip()
+        raise ValueError(
+            f"Unrecognized boolean-like value: {value!r}. "
+            f"Expected one of "
+            f"{sorted(TRUE_VALUES | FALSE_VALUES)}."
+        )
 
     return value
 
