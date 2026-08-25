@@ -97,7 +97,14 @@ def validate_grounding(
 ) -> list[str]:
     """
     Verify that every cited policy exists in the Policy Registry.
+
+    If ai_output isn't a dict, this returns no errors of its own --
+    validate_ai_output_schema() already reports that failure, and
+    this check has nothing meaningful to add on top of it.
     """
+
+    if not isinstance(ai_output, dict):
+        return []
 
     errors: list[str] = []
 
@@ -147,7 +154,13 @@ def validate_no_finding_mutation(
         finding_status
 
     Also validates finding_id and audit_run_id identity.
+
+    If ai_output isn't a dict, this returns no errors of its own --
+    validate_ai_output_schema() already reports that failure.
     """
+
+    if not isinstance(ai_output, dict):
+        return []
 
     errors: list[str] = []
 
@@ -195,7 +208,13 @@ def validate_no_invented_evidence(
     """
     Ensure cited policies were actually present in the
     policy_context sent to the model.
+
+    If ai_output isn't a dict, this returns no errors of its own --
+    validate_ai_output_schema() already reports that failure.
     """
+
+    if not isinstance(ai_output, dict):
+        return []
 
     errors: list[str] = []
 

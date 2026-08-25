@@ -438,3 +438,65 @@ def test_validate_ai_output_or_raise_raises_for_invalid_output(
         validate_ai_output_or_raise(
             output, ai_input, finding_before, finding_after, registry
         )
+# =====================================================================
+# NON-DICT ai_output (malformed LLM response / upstream parsing failure)
+# =====================================================================
+
+@pytest.mark.parametrize("bad_output", [None, "not a dict", [1, 2, 3], 42])
+def test_non_dict_ai_output_fails_schema_cleanly(bad_output):
+    """
+    A malformed ai_output (e.g. None from a failed upstream parse,
+    or an unexpected type) must be rejected with a clear schema
+    error, not crash the caller.
+    """
+
+    errors = validate_ai_output_schema(bad_output)
+
+    assert errors == ["ai_output must be a dictionary."]
+
+
+@pytest.mark.parametrize("bad_output", [None, "not a dict", [1, 2, 3], 42])
+def test_non_dict_ai_output_does_not_crash_grounding(bad_output, registry):
+    """
+    validate_grounding must not raise AttributeError when ai_output
+    isn't a dict -- the schema check already reports this failure,
+    so grounding should just be a no-op rather than crashing the
+    whole validation pipeline.
+    """
+
+    errors = validate_grounding(bad_output, registry)
+
+    assert errors == []
+
+
+@pytest.mark.parametrize("bad_output", [None, "not a dict", [1, 2, 3], 42])
+def test_non_dict_ai_output_does_not_crash_invented_evidence(
+    bad_output, ai_input
+):
+    """
+    validate_no_invented_evidence must not raise AttributeError when
+    ai_output isn't a dict, for the same reason as grounding above.
+    """
+
+    errors = validate_no_invented_evidence(bad_output, ai_input)
+
+    assert errors == []
+
+
+@pytest.mark.parametrize("bad_output", [None, "not a dict", [1, 2, 3], 42])
+def test_non_dict_ai_output_reported_cleanly_by_aggregator(
+    bad_output, ai_input, finding_before, registry
+):
+    """
+    The full aggregator must survive a malformed ai_output end to
+    end and report exactly the schema failure -- not crash with an
+    unrelated AttributeError from a downstream check.
+    """
+
+    finding_after = copy.deepcopy(finding_before)
+
+    errors = get_ai_output_validation_errors(
+        bad_output, ai_input, finding_before, finding_after, registry
+    )
+
+    assert "ai_output must be a dictionary." in errors        

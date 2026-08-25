@@ -76,58 +76,6 @@ def run_audit_and_persist(
 
     Persistence is best-effort:
 
-    - If Supabase isn't configured (PersistenceNotConfigured -- missing
-      env vars or the 'supabase' package), persistence is skipped and
-      `persistence.persisted` is False. The pipeline result itself is
-      still returned untouched.
-    - Any other exception raised while persisting is NOT swallowed --
-      only the "not configured" case is treated as expected/optional.
-
-    A `client` can be passed in explicitly (e.g. a fake client in
-    tests, or an already-constructed Supabase client); otherwise each
-    write function builds its own via engine.persistence.get_supabase_client().
-    """
-
-    pipeline_result = run_audit(data_dir=data_dir)
-
-    try:
-        client = client or get_supabase_client()
-        sync_policy_registry(load_policy_registry(DATA_DIR), client=client)
-        write_audit_run(pipeline_result.audit_trace, client=client)
-        write_findings(pipeline_result.generated_findings, client=client)
-        write_audit_evaluation(
-            pipeline_result.evaluation,
-            audit_run_id=pipeline_result.audit_trace.audit_run_id,
-            client=client,
-        )
-    except PersistenceNotConfigured as exc:
-        return OrchestratedAuditResult(
-            pipeline_result=pipeline_result,
-            persistence=PersistenceOutcome(
-                attempted=True,
-                persisted=False,
-                reason=str(exc),
-            ),
-        )
-
-    return OrchestratedAuditResult(
-        pipeline_result=pipeline_result,
-        persistence=PersistenceOutcome(
-            attempted=True,
-            persisted=True,
-        ),
-    )
-def run_audit_and_persist(
-    data_dir: Path | str | None = None,
-    client: Any | None = None,
-) -> OrchestratedAuditResult:
-    """
-    Run Stage 1 of the audit pipeline, then persist the audit run,
-    the generated findings, and the ground-truth evaluation metrics
-    to Supabase.
-
-    Persistence is best-effort:
-
     - If the pipeline itself failed (pipeline_result.audit_trace.status
       == "FAILED"), persistence is skipped entirely and
       `persistence.persisted` is False with a reason explaining why --
