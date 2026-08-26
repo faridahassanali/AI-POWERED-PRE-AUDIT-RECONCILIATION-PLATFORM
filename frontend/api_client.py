@@ -32,7 +32,7 @@ API_KEY = _raw_keys.split(",")[0].strip() if _raw_keys else ""
 HEADERS = {"X-API-Key": API_KEY}
 
 DEFAULT_TIMEOUT = 15
-AUDIT_TIMEOUT = 120  # running the full pipeline can take longer
+AUDIT_TIMEOUT = 120  # running the full pipeline / calling the LLM can take longer
 
 
 class BackendError(RuntimeError):
@@ -136,6 +136,11 @@ def update_finding(finding_id: str, **fields) -> dict:
     ai_explanation, ai_recommendation (matching FindingUpdate on the
     backend). Only pass the fields you actually want to change.
     Returns the updated finding record as stored in Supabase.
+
+    Note: as of backend/main.py's update_finding(), confirming a
+    finding (finding_status="CONFIRMED") also triggers the
+    deterministic Stage 2 explanation automatically on the backend --
+    the frontend no longer needs to call explain_finding() itself.
     """
 
     payload = {key: value for key, value in fields.items() if value is not None}
@@ -162,3 +167,57 @@ def get_finding_reviews(finding_id: str) -> list[dict]:
 
     data = _unwrap(response)
     return data["reviews"]
+
+
+def generate_ai_explanation(finding_id: str) -> dict:
+    """
+    Trigger POST /findings/{id}/ai-explanation.
+
+    Runs Stage 3 (RAG retrieval + LLM call + output validation) on
+    the backend and persists the result. Uses AUDIT_TIMEOUT instead
+    of DEFAULT_TIMEOUT since the LLM call can take a while.
+
+    Returns a dict with at least: finding_id, ai_explanation,
+    ai_recommendation.
+    """
+
+    response = requests.post(
+        f"{API_BASE}/findings/{finding_id}/ai-explanation",
+        headers=HEADERS,
+        timeout=AUDIT_TIMEOUT,
+    )
+
+    data = _unwrap(response)
+    return data["finding"]
+
+
+def get_evaluation(audit_run_id: str) -> dict | None:
+    """
+    Fetch evaluation metrics via GET /audit-runs/{id}/evaluation.
+
+    Returns None if no evaluation has been persisted yet for this
+    run (backend responds with status "not_found") instead of
+    raising -- callers can treat None exactly like the old
+    evaluation=None placeholder state used before this endpoint
+    existed.
+    """
+
+    if not audit_run_id:
+        return None
+
+    response = requests.get(
+        f"{API_BASE}/audit-runs/{audit_run_id}/evaluation",
+        headers=HEADERS,
+        timeout=DEFAULT_TIMEOUT,
+    )
+
+    response.raise_for_status()
+    data = response.json()
+
+    if data.get("status") == "not_found":
+        return None
+
+    if data.get("status") == "error":
+        raise BackendError(data.get("message", "Unknown backend error."))
+
+    return data["evaluation"]

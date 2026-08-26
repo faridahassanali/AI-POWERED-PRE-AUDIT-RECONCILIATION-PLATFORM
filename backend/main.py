@@ -15,11 +15,17 @@ from engine.audit_pipeline import run_audit
 from engine.policy_registry import load_policy_registry
 from RAG.retriever import retrieve_for_finding
 
+from engine.ai_explanation_pipeline import generate_ai_explanation_for_finding
+from engine.finding_explainer import explain_finding
+
 from engine.persistence import (
     write_audit_run,
     write_findings,
     create_finding_review,
     get_finding_reviews,
+    write_ai_output,
+    write_finding_explanation,
+    write_audit_evaluation,
 )
 
 # =========================================================
@@ -47,6 +53,45 @@ def _read_client():
     restricted automatically -- no other code change needed.
     """
     return supabase_anon or supabase
+
+
+# =========================================================
+# AI INPUT SAFELIST
+# =========================================================
+# Only these keys are safe to hand to the AI pipeline. Rows read
+# straight from Supabase also carry created_at/updated_at (and
+# possibly other DB-only columns) which the AI input schema rejects
+# with "Additional properties are not allowed" -- this whitelist
+# mirrors the shape engine.persistence._finding_row() already
+# writes, so it's the canonical "safe" shape for a finding
+# everywhere else in the app.
+
+_FINDING_AI_FIELDS = {
+    "finding_id",
+    "audit_run_id",
+    "control_id",
+    "customer_id",
+    "severity",
+    "assessment_status",
+    "finding_status",
+    "expected",
+    "actual",
+    "evidence",
+    "policy_references",
+    "reviewed_by",
+    "review_timestamp",
+    "reviewer_notes",
+    "ai_explanation",
+    "ai_recommendation",
+}
+
+
+def _clean_finding_for_ai(finding: dict) -> dict:
+    return {
+        key: value
+        for key, value in finding.items()
+        if key in _FINDING_AI_FIELDS
+    }
 
 
 app = FastAPI(
@@ -194,31 +239,47 @@ def execute_audit(_: str = Depends(verify_api_key)):
         )
 
         # -----------------------------------------------------
+        # 3b. SAVE EVALUATION METRICS
+        # -----------------------------------------------------
+
+        try:
+            write_audit_evaluation(
+                result.evaluation,
+                audit_run_id=result.audit_trace.audit_run_id,
+            )
+        except Exception as eval_error:
+            # Don't fail the whole audit run just because the
+            # evaluation row couldn't be persisted -- report it in
+            # the response instead. The dashboard will keep showing
+            # placeholders until this is fixed.
+            evaluation_save_error = str(eval_error)
+        else:
+            evaluation_save_error = None
+
+        # -----------------------------------------------------
         # 4. RETURN SUMMARY
         # -----------------------------------------------------
 
         return {
-            "status": "success",
-            "message": "Audit executed successfully.",
-            "audit_run_id": (
-                result.audit_trace.audit_run_id
-            ),
-            "total_records_evaluated": (
-                result.audit_trace
-                .total_records_evaluated
-            ),
-            "total_findings_generated": (
-                result.audit_trace
-                .total_findings_generated
-            ),
-            "audit_run_saved": (
-                len(audit_run_result) > 0
-            ),
-            "findings_saved": len(
-                findings_result
-            ),
-            "report": result.report,
-        }
+    "status": "success",
+    "message": "Audit executed successfully.",
+    "audit_run_id": result.audit_trace.audit_run_id,
+    "total_records_evaluated": result.audit_trace.total_records_evaluated,
+    "total_findings_generated": result.audit_trace.total_findings_generated,
+    "audit_run_saved": len(audit_run_result) > 0,
+    "findings_saved": len(findings_result),
+    "evaluation_saved": evaluation_save_error is None,
+    "evaluation_save_error": evaluation_save_error,
+    "report": result.report,
+    "evaluation": {
+        "true_positives": result.evaluation.true_positives,
+        "false_positives": result.evaluation.false_positives,
+        "false_negatives": result.evaluation.false_negatives,
+        "precision": result.evaluation.precision,
+        "recall": result.evaluation.recall,
+        "f1_score": result.evaluation.f1_score,
+    },
+}
 
     except Exception as e:
 
@@ -292,6 +353,57 @@ def get_audit_run(
         return {
             "status": "success",
             "audit_run": response.data[0],
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# =========================================================
+# AUDIT RUN EVALUATION
+# =========================================================
+
+@app.get("/audit-runs/{audit_run_id}/evaluation")
+def get_audit_evaluation(
+    audit_run_id: str,
+):
+    """
+    Return the ground-truth evaluation metrics (TP/FP/FN,
+    Precision/Recall/F1) for one audit run, if they've been
+    persisted to public.audit_evaluations.
+    """
+
+    try:
+
+        response = (
+            _read_client()
+            .table("audit_evaluations")
+            .select("*")
+            .eq(
+                "audit_run_id",
+                audit_run_id,
+            )
+            .limit(1)
+            .execute()
+        )
+
+        if not response.data:
+
+            return {
+                "status": "not_found",
+                "message": (
+                    f"No evaluation found for audit run "
+                    f"'{audit_run_id}'."
+                ),
+            }
+
+        return {
+            "status": "success",
+            "evaluation": response.data[0],
         }
 
     except Exception as e:
@@ -623,10 +735,6 @@ def get_dashboard_summary():
 
 
 # =========================================================
-# GET SINGLE FINDING
-# =========================================================
-
-# =========================================================
 # FINDING POLICY RETRIEVAL
 # =========================================================
 
@@ -713,6 +821,117 @@ def get_finding_policy(
             "status": "error",
             "message": str(e),
         }
+
+
+# =========================================================
+# AI EXPLANATION (STAGE 3)
+# =========================================================
+
+@app.post("/findings/{finding_id}/ai-explanation")
+def generate_ai_explanation(
+    finding_id: str,
+    _: str = Depends(verify_api_key),
+):
+    """
+    Generate (and persist) the LLM explanation/recommendation for
+    one CONFIRMED finding.
+
+    Flow:
+
+        Finding (Supabase)
+            ↓ cleaned to the AI-safe field whitelist
+        generate_ai_explanation_for_finding()
+            ↓ RAG retrieval -> LLM -> output validation
+        write_findings() + write_ai_output()
+
+    This replaces the frontend calling
+    engine.ai_explanation_pipeline directly from inside the
+    Streamlit process -- the frontend now only needs APP_API_KEYS,
+    never SUPABASE_SERVICE_ROLE_KEY / GROQ_API_KEY / GEMINI_API_KEY.
+
+    The whitelist in _clean_finding_for_ai() is what fixes the
+    "Additional properties are not allowed ('created_at',
+    'updated_at')" error -- rows read straight from Supabase carry
+    those extra columns, which the AI input schema rejects.
+    """
+
+    try:
+
+        response = (
+            supabase
+            .table("findings")
+            .select("*")
+            .eq(
+                "finding_id",
+                finding_id,
+            )
+            .limit(1)
+            .execute()
+        )
+
+        if not response.data:
+
+            return {
+                "status": "not_found",
+                "message": (
+                    f"Finding '{finding_id}' "
+                    "was not found."
+                ),
+            }
+
+        finding = _clean_finding_for_ai(
+            response.data[0]
+        )
+
+        result = generate_ai_explanation_for_finding(
+            finding,
+            registry=policy_registry,
+        )
+
+        if not result.succeeded:
+
+            return {
+                "status": "error",
+                "message": result.error,
+            }
+
+        try:
+            write_findings([finding])
+            write_ai_output(finding)
+
+        except Exception as persist_error:
+
+            return {
+                "status": "success",
+                "warning": (
+                    "AI explanation was generated, but could not "
+                    "be persisted."
+                ),
+                "persist_error": str(persist_error),
+                "finding": {
+                    "finding_id": finding_id,
+                    "ai_explanation": finding.get("ai_explanation"),
+                    "ai_recommendation": finding.get("ai_recommendation"),
+                },
+            }
+
+        return {
+            "status": "success",
+            "finding": {
+                "finding_id": finding_id,
+                "ai_explanation": finding.get("ai_explanation"),
+                "ai_recommendation": finding.get("ai_recommendation"),
+            },
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
 # =========================================================
 # CREATE FINDING
 # =========================================================
@@ -943,6 +1162,48 @@ def update_finding(
                     "review_error": str(
                         review_error
                     ),
+                    "finding": updated_finding,
+                }
+
+        # -----------------------------------------------------
+        # 4b. AUTO-GENERATE DETERMINISTIC EXPLANATION (STAGE 2)
+        # -----------------------------------------------------
+        # Runs automatically the moment a finding transitions to
+        # CONFIRMED -- no LLM, cannot fail on network/API issues,
+        # so it's safe to run inline here instead of leaving it to
+        # the frontend to trigger as a separate call. This mirrors
+        # what frontend/app.py used to do locally right after a
+        # successful Confirm.
+
+        if (
+            update.finding_status == "CONFIRMED"
+            and previous_status != "CONFIRMED"
+        ):
+
+            try:
+                deterministic_explanation = explain_finding(
+                    updated_finding
+                )
+                write_finding_explanation(
+                    deterministic_explanation
+                )
+
+            except ValueError:
+                # explain_finding() only raises if the finding
+                # isn't CONFIRMED -- unreachable here since we just
+                # set it above, guarded rather than assumed.
+                pass
+
+            except Exception as explain_error:
+
+                return {
+                    "status": "success",
+                    "warning": (
+                        "Finding was confirmed, but the "
+                        "deterministic explanation could not be "
+                        "generated/persisted."
+                    ),
+                    "explain_error": str(explain_error),
                     "finding": updated_finding,
                 }
 
