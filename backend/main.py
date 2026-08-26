@@ -4,6 +4,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from fastapi.middleware.cors import CORSMiddleware
+from backend.auth import verify_api_key, require_api_key_configured
+from fastapi import Depends
+import os
+
 from backend.database import supabase
 
 from engine.audit_pipeline import run_audit
@@ -30,7 +35,15 @@ app = FastAPI(
     title="AI-Powered Pre-Audit Platform",
     version="1.0.0",
 )
+require_api_key_configured()  # fails loudly if APP_API_KEYS isn't set
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("APP_CORS_ORIGINS", "").split(",") if os.environ.get("APP_CORS_ORIGINS") else [],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["X-API-Key", "Content-Type"],
+)
 
 # =========================================================
 # REQUEST MODELS
@@ -123,7 +136,7 @@ def database_health():
 # =========================================================
 
 @app.post("/audit-runs/execute")
-def execute_audit():
+def execute_audit(_: str = Depends(verify_api_key)):
     """
     Execute the existing deterministic audit pipeline.
 
@@ -274,6 +287,7 @@ def get_audit_run(
 @app.post("/audit-runs")
 def create_audit_run(
     audit_run: AuditRunCreate,
+    _: str = Depends(verify_api_key),
 ):
     try:
 
@@ -319,6 +333,7 @@ def create_audit_run(
 def update_audit_run(
     audit_run_id: str,
     update: AuditRunUpdate,
+    _: str = Depends(verify_api_key),
 ):
     try:
 
@@ -687,6 +702,7 @@ def get_finding_policy(
 @app.post("/findings")
 def create_finding(
     finding: FindingCreate,
+    _: str = Depends(verify_api_key),
 ):
     try:
 
@@ -738,6 +754,7 @@ def create_finding(
 def update_finding(
     finding_id: str,
     update: FindingUpdate,
+    _: str = Depends(verify_api_key),
 ):
     try:
 

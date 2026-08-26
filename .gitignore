@@ -31,3 +31,5 @@ RAG/.qdrant_storage/
 
 # LLM/RAG quality evaluation reports (generated, not source)
 evaluation_reports/
+
+supabase/.temp/
