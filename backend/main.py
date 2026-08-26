@@ -9,7 +9,7 @@ from backend.auth import verify_api_key, require_api_key_configured
 from fastapi import Depends
 import os
 
-from backend.database import supabase
+from backend.database import supabase, supabase_anon
 
 from engine.audit_pipeline import run_audit
 from engine.policy_registry import load_policy_registry
@@ -30,6 +30,24 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
 policy_registry = load_policy_registry(DATA_DIR)
+
+
+def _read_client():
+    """
+    Client used by read-only (GET) endpoints.
+
+    Prefers the anon key, which is subject to the RLS read policies
+    in supabase/migrations/20260826140000_rls_read_policies.sql --
+    so these routes can never see more than those policies allow,
+    even if a future endpoint is added carelessly.
+
+    Falls back to the service-role client if SUPABASE_ANON_KEY isn't
+    configured yet, so this doesn't break a deployment that hasn't
+    added the key. Once SUPABASE_ANON_KEY is set, reads are RLS-
+    restricted automatically -- no other code change needed.
+    """
+    return supabase_anon or supabase
+
 
 app = FastAPI(
     title="AI-Powered Pre-Audit Platform",
@@ -219,7 +237,7 @@ def get_audit_runs():
     try:
 
         response = (
-            supabase
+            _read_client()
             .table("audit_runs")
             .select("*")
             .order(
@@ -250,7 +268,7 @@ def get_audit_run(
     try:
 
         response = (
-            supabase
+            _read_client()
             .table("audit_runs")
             .select("*")
             .eq(
@@ -424,7 +442,7 @@ def get_findings(
     try:
 
         query = (
-            supabase
+            _read_client()
             .table("findings")
             .select("*")
         )
@@ -515,7 +533,7 @@ def get_dashboard_summary():
     try:
 
         response = (
-            supabase
+            _read_client()
             .table("findings")
             .select(
                 "finding_status, severity"
@@ -639,7 +657,7 @@ def get_finding_policy(
         # -----------------------------------------------------
 
         response = (
-            supabase
+            _read_client()
             .table("findings")
             .select("*")
             .eq(
