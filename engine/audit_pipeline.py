@@ -282,7 +282,8 @@ def run_audit(
     # 1. CREATE AUDIT RUN ID
     # =========================================================
 
-    audit_run_id = f"AUDIT-{uuid4().hex}"
+    if audit_run_id is None:
+       audit_run_id = f"AUDIT-{uuid4().hex}"
 
     # =========================================================
     # 2. LOAD DATA
@@ -512,6 +513,7 @@ def explain_confirmed_findings(
     return explanations
 def run_audit(
     data_dir: Path | str | None = None,
+    audit_run_id: str | None = None,
 ) -> AuditPipelineResult:
     """
     ...
@@ -523,26 +525,24 @@ def run_audit(
     # =========================================================
     # 1. CREATE AUDIT RUN ID + INITIAL TRACE
     # =========================================================
-    # The trace is created FIRST, before anything that can fail
-    # (including data loading), so that a failure at any stage --
-    # not just inside the deterministic controls -- is still
-    # recorded on a trace instead of raising with nothing captured.
-    # total_records_evaluated is corrected below once `unified`
-    # exists; if we never get that far, it stays 0, which is
-    # accurate for a run that never loaded any records.
 
-    audit_run_id = f"AUDIT-{uuid4().hex}"
+    # Use the caller-provided audit_run_id when available.
+    # This is required for API-level idempotency because the
+    # endpoint claims the idempotency key using a specific
+    # audit_run_id before executing the pipeline.
+    if audit_run_id is None:
+       audit_run_id = f"AUDIT-{uuid4().hex}"
 
     audit_trace = create_audit_trace(
-        audit_run_id=audit_run_id,
-        controls_executed=[
-            "SCREENING_001",
-            "RISK_001",
-            "ARABIC_NAME_001",
-            "DORMANT_001",
-            "RECON_001",
-        ],
-        total_records_evaluated=0,
+    audit_run_id=audit_run_id,
+    controls_executed=[
+        "SCREENING_001",
+        "RISK_001",
+        "ARABIC_NAME_001",
+        "DORMANT_001",
+        "RECON_001",
+    ],
+    total_records_evaluated=0,
     )
 
     try:

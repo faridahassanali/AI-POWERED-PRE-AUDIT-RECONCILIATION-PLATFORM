@@ -1,29 +1,44 @@
 """
 Tests for app.py (Streamlit Findings List + Finding Detail view).
 
-Only the pure functions (filter_findings, get_finding_by_id,
-get_nav_state) are tested directly here — they contain zero
-Streamlit calls, so they run under plain pytest with no app
-server needed.
+Pure-function coverage:
+    - get_finding_by_id
+    - filter_findings
+    - get_nav_state
+    - sort_findings
 
-Rendering functions (render_findings_list, render_finding_detail,
-render_sidebar, render_navigation) are NOT covered here: they call
-st.* widgets directly and would need streamlit.testing.v1.AppTest
-for an end-to-end smoke test. That's a reasonable follow-up, not
-required for this MVP.
+Streamlit AppTest smoke coverage:
+    - Generate AI explanation button for a CONFIRMED finding
+      without existing AI output.
+
+The Streamlit application lives at:
+
+    frontend/app.py
+
+The frontend communicates with the FastAPI backend through:
+
+    frontend.api_client
+
+Therefore the AppTest smoke test patches frontend.api_client
+functions rather than the engine layer.
 """
 
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
-import engine.persistence as persistence_module
 
-from app import filter_findings, get_finding_by_id, get_nav_state, sort_findings
+from frontend.app import (
+    filter_findings,
+    get_finding_by_id,
+    get_nav_state,
+    sort_findings,
+)
 
 
 # =========================================================
 # FIXTURES
 # =========================================================
+
 
 @pytest.fixture
 def sample_findings() -> list[dict]:
@@ -38,11 +53,21 @@ def sample_findings() -> list[dict]:
             "severity": "CRITICAL",
             "assessment_status": "FAIL",
             "finding_status": "REVIEW",
-            "expected": "Customer must have a CLEAR screening result.",
-            "actual": "Screening result is not CLEAR.",
-            "evidence": {"screening_status": "PENDING"},
+            "expected": (
+                "Customer must have a CLEAR screening result."
+            ),
+            "actual": (
+                "Screening result is not CLEAR."
+            ),
+            "evidence": {
+                "screening_status": "PENDING"
+            },
             "policy_references": [
-                {"policy_id": "POL-01", "version": "1.0", "section": "3.2"}
+                {
+                    "policy_id": "POL-01",
+                    "version": "1.0",
+                    "section": "3.2",
+                }
             ],
         },
         {
@@ -53,9 +78,15 @@ def sample_findings() -> list[dict]:
             "severity": "MEDIUM",
             "assessment_status": "FAIL",
             "finding_status": "REVIEW",
-            "expected": "Customer record must contain an Arabic-script name.",
-            "actual": "Arabic name is missing.",
-            "evidence": {"name_ar": None},
+            "expected": (
+                "Customer record must contain an Arabic-script name."
+            ),
+            "actual": (
+                "Arabic name is missing."
+            ),
+            "evidence": {
+                "name_ar": None
+            },
             "policy_references": [],
         },
         {
@@ -66,9 +97,15 @@ def sample_findings() -> list[dict]:
             "severity": "HIGH",
             "assessment_status": "FAIL",
             "finding_status": "CONFIRMED",
-            "expected": "Customer must have a CLEAR screening result.",
-            "actual": "Screening result is not CLEAR.",
-            "evidence": {"screening_status": "REJECTED"},
+            "expected": (
+                "Customer must have a CLEAR screening result."
+            ),
+            "actual": (
+                "Screening result is not CLEAR."
+            ),
+            "evidence": {
+                "screening_status": "REJECTED"
+            },
             "policy_references": [],
         },
         {
@@ -79,8 +116,12 @@ def sample_findings() -> list[dict]:
             "severity": "LOW",
             "assessment_status": "FAIL",
             "finding_status": "REJECTED",
-            "expected": "Risk score must be recalculated within 30 days.",
-            "actual": "Risk score is stale.",
+            "expected": (
+                "Risk score must be recalculated within 30 days."
+            ),
+            "actual": (
+                "Risk score is stale."
+            ),
             "evidence": {},
             "policy_references": [],
         },
@@ -96,31 +137,56 @@ def sample_df(sample_findings) -> pd.DataFrame:
 # get_finding_by_id
 # =========================================================
 
+
 def test_get_finding_by_id_found(sample_findings):
-    finding = get_finding_by_id(sample_findings, "F-BBBB0002")
+    finding = get_finding_by_id(
+        sample_findings,
+        "F-BBBB0002",
+    )
+
     assert finding is not None
     assert finding["control_id"] == "ARABIC_NAME_001"
 
 
 def test_get_finding_by_id_not_found(sample_findings):
-    assert get_finding_by_id(sample_findings, "F-NOPE9999") is None
+    assert (
+        get_finding_by_id(
+            sample_findings,
+            "F-NOPE9999",
+        )
+        is None
+    )
 
 
 def test_get_finding_by_id_empty_list():
-    assert get_finding_by_id([], "F-AAAA0001") is None
+    assert (
+        get_finding_by_id(
+            [],
+            "F-AAAA0001",
+        )
+        is None
+    )
 
 
 # =========================================================
 # filter_findings — control/severity/status filters
 # =========================================================
 
+
 def test_filter_findings_no_filters_returns_all(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df["control_id"].unique().tolist(),
-        selected_severities=sample_df["severity"].unique().tolist(),
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_controls=sample_df[
+            "control_id"
+        ].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
     )
+
     assert len(result) == 4
 
 
@@ -128,49 +194,83 @@ def test_filter_findings_by_single_control(sample_df):
     result = filter_findings(
         sample_df,
         selected_controls=["SCREENING_001"],
-        selected_severities=sample_df["severity"].unique().tolist(),
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
     )
-    assert set(result["finding_id"]) == {"F-AAAA0001", "F-CCCC0003"}
+
+    assert set(result["finding_id"]) == {
+        "F-AAAA0001",
+        "F-CCCC0003",
+    }
 
 
 def test_filter_findings_by_severity(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df["control_id"].unique().tolist(),
+        selected_controls=sample_df[
+            "control_id"
+        ].unique().tolist(),
         selected_severities=["CRITICAL"],
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
     )
-    assert result["finding_id"].tolist() == ["F-AAAA0001"]
+
+    assert result["finding_id"].tolist() == [
+        "F-AAAA0001"
+    ]
 
 
 def test_filter_findings_by_status(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df["control_id"].unique().tolist(),
-        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_controls=sample_df[
+            "control_id"
+        ].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
         selected_statuses=["REJECTED"],
     )
-    assert result["finding_id"].tolist() == ["F-DDDD0004"]
+
+    assert result["finding_id"].tolist() == [
+        "F-DDDD0004"
+    ]
 
 
-def test_filter_findings_combined_filters_narrow_correctly(sample_df):
+def test_filter_findings_combined_filters_narrow_correctly(
+    sample_df,
+):
     result = filter_findings(
         sample_df,
         selected_controls=["SCREENING_001"],
         selected_severities=["HIGH"],
         selected_statuses=["CONFIRMED"],
     )
-    assert result["finding_id"].tolist() == ["F-CCCC0003"]
+
+    assert result["finding_id"].tolist() == [
+        "F-CCCC0003"
+    ]
 
 
-def test_filter_findings_empty_selection_returns_empty(sample_df):
+def test_filter_findings_empty_selection_returns_empty(
+    sample_df,
+):
     result = filter_findings(
         sample_df,
         selected_controls=[],
-        selected_severities=sample_df["severity"].unique().tolist(),
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
     )
+
     assert result.empty
 
 
@@ -178,48 +278,95 @@ def test_filter_findings_empty_selection_returns_empty(sample_df):
 # filter_findings — search
 # =========================================================
 
-def test_filter_findings_search_by_finding_id_case_insensitive(sample_df):
+
+def test_filter_findings_search_by_finding_id_case_insensitive(
+    sample_df,
+):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df["control_id"].unique().tolist(),
-        selected_severities=sample_df["severity"].unique().tolist(),
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_controls=sample_df[
+            "control_id"
+        ].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
         search="f-aaaa0001",
     )
-    assert result["finding_id"].tolist() == ["F-AAAA0001"]
+
+    assert result["finding_id"].tolist() == [
+        "F-AAAA0001"
+    ]
 
 
-def test_filter_findings_search_by_customer_id(sample_df):
+def test_filter_findings_search_by_customer_id(
+    sample_df,
+):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df["control_id"].unique().tolist(),
-        selected_severities=sample_df["severity"].unique().tolist(),
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_controls=sample_df[
+            "control_id"
+        ].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
         search="100016",
     )
-    assert result["finding_id"].tolist() == ["F-CCCC0003"]
+
+    assert result["finding_id"].tolist() == [
+        "F-CCCC0003"
+    ]
 
 
-def test_filter_findings_search_with_null_customer_id_does_not_crash(sample_df):
-    # F-DDDD0004 has customer_id=None — must not raise on .str ops.
+def test_filter_findings_search_with_null_customer_id_does_not_crash(
+    sample_df,
+):
+    """
+    F-DDDD0004 has customer_id=None.
+    Searching must not raise on pandas .str operations.
+    """
+
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df["control_id"].unique().tolist(),
-        selected_severities=sample_df["severity"].unique().tolist(),
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_controls=sample_df[
+            "control_id"
+        ].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
         search="dddd",
     )
-    assert result["finding_id"].tolist() == ["F-DDDD0004"]
+
+    assert result["finding_id"].tolist() == [
+        "F-DDDD0004"
+    ]
 
 
-def test_filter_findings_search_no_match_returns_empty(sample_df):
+def test_filter_findings_search_no_match_returns_empty(
+    sample_df,
+):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df["control_id"].unique().tolist(),
-        selected_severities=sample_df["severity"].unique().tolist(),
-        selected_statuses=sample_df["finding_status"].unique().tolist(),
+        selected_controls=sample_df[
+            "control_id"
+        ].unique().tolist(),
+        selected_severities=sample_df[
+            "severity"
+        ].unique().tolist(),
+        selected_statuses=sample_df[
+            "finding_status"
+        ].unique().tolist(),
         search="does-not-exist",
     )
+
     assert result.empty
 
 
@@ -227,9 +374,19 @@ def test_filter_findings_search_no_match_returns_empty(sample_df):
 # get_nav_state
 # =========================================================
 
+
 def test_get_nav_state_middle_position():
-    ids = ["F-1", "F-2", "F-3"]
-    state = get_nav_state(ids, "F-2")
+    ids = [
+        "F-1",
+        "F-2",
+        "F-3",
+    ]
+
+    state = get_nav_state(
+        ids,
+        "F-2",
+    )
+
     assert state == {
         "position": 1,
         "total": 3,
@@ -239,97 +396,181 @@ def test_get_nav_state_middle_position():
 
 
 def test_get_nav_state_first_position_has_no_prev():
-    ids = ["F-1", "F-2", "F-3"]
-    state = get_nav_state(ids, "F-1")
+    ids = [
+        "F-1",
+        "F-2",
+        "F-3",
+    ]
+
+    state = get_nav_state(
+        ids,
+        "F-1",
+    )
+
     assert state["prev_id"] is None
     assert state["next_id"] == "F-2"
 
 
 def test_get_nav_state_last_position_has_no_next():
-    ids = ["F-1", "F-2", "F-3"]
-    state = get_nav_state(ids, "F-3")
+    ids = [
+        "F-1",
+        "F-2",
+        "F-3",
+    ]
+
+    state = get_nav_state(
+        ids,
+        "F-3",
+    )
+
     assert state["next_id"] is None
     assert state["prev_id"] == "F-2"
 
 
 def test_get_nav_state_single_item_has_no_prev_or_next():
-    state = get_nav_state(["F-1"], "F-1")
+    state = get_nav_state(
+        ["F-1"],
+        "F-1",
+    )
+
     assert state["prev_id"] is None
     assert state["next_id"] is None
     assert state["total"] == 1
 
 
 def test_get_nav_state_id_not_in_list_returns_none():
-    # e.g. stale selected_finding_id after filters changed.
-    assert get_nav_state(["F-1", "F-2"], "F-STALE") is None
+    """
+    Simulates a stale selected_finding_id after filters change.
+    """
+
+    assert (
+        get_nav_state(
+            ["F-1", "F-2"],
+            "F-STALE",
+        )
+        is None
+    )
 
 
 # =========================================================
 # sort_findings
 # =========================================================
 
-def test_sort_findings_by_severity_critical_first(sample_df):
-    result = sort_findings(sample_df, "Severity (Critical first)")
-    assert result["severity"].tolist() == ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+
+def test_sort_findings_by_severity_critical_first(
+    sample_df,
+):
+    result = sort_findings(
+        sample_df,
+        "Severity (Critical first)",
+    )
+
+    assert result["severity"].tolist() == [
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+    ]
 
 
 def test_sort_findings_by_finding_id(sample_df):
-    result = sort_findings(sample_df, "Finding ID")
-    assert result["finding_id"].tolist() == sorted(sample_df["finding_id"])
+    result = sort_findings(
+        sample_df,
+        "Finding ID",
+    )
+
+    assert result["finding_id"].tolist() == sorted(
+        sample_df["finding_id"]
+    )
 
 
 def test_sort_findings_by_control(sample_df):
-    result = sort_findings(sample_df, "Control")
-    assert result["control_id"].tolist() == sorted(sample_df["control_id"])
+    result = sort_findings(
+        sample_df,
+        "Control",
+    )
+
+    assert result["control_id"].tolist() == sorted(
+        sample_df["control_id"]
+    )
 
 
-def test_sort_findings_by_customer_puts_null_last(sample_df):
-    # F-DDDD0004 has customer_id=None and must not crash the sort,
-    # and should not appear before real customer ids.
-    result = sort_findings(sample_df, "Customer")
-    assert result["finding_id"].tolist()[-1] == "F-DDDD0004"
+def test_sort_findings_by_customer_puts_null_last(
+    sample_df,
+):
+    """
+    F-DDDD0004 has customer_id=None.
+
+    Sorting must:
+        1. not crash
+        2. put the null customer last
+    """
+
+    result = sort_findings(
+        sample_df,
+        "Customer",
+    )
+
+    assert result["finding_id"].tolist()[-1] == (
+        "F-DDDD0004"
+    )
 
 
-def test_sort_findings_unrecognized_key_returns_unchanged(sample_df):
-    result = sort_findings(sample_df, "Not A Real Option")
-    assert result["finding_id"].tolist() == sample_df["finding_id"].tolist()
+def test_sort_findings_unrecognized_key_returns_unchanged(
+    sample_df,
+):
+    result = sort_findings(
+        sample_df,
+        "Not A Real Option",
+    )
+
+    assert result["finding_id"].tolist() == (
+        sample_df["finding_id"].tolist()
+    )
 
 
 # =========================================================
-# GENERATE AI EXPLANATION BUTTON (AppTest smoke test)
+# GENERATE AI EXPLANATION BUTTON
+# Streamlit AppTest smoke test
 # =========================================================
-#
-# Unlike the pure-function tests above, this drives the actual
-# Streamlit widget tree via streamlit.testing.v1.AppTest, since the
-# button lives inside render_finding_detail() (a rendering function).
-#
-# app.py now loads its findings through
-# engine.audit_orchestration.run_audit_and_persist() (not
-# engine.audit_pipeline.run_audit() directly), so this patches
-# run_audit_and_persist itself rather than the underlying run_audit.
-# Patching engine.audit_pipeline.run_audit would NOT work here:
-# engine/audit_orchestration.py does `from engine.audit_pipeline
-# import run_audit` at import time, which binds a fixed reference in
-# audit_orchestration's own namespace -- monkeypatching the source
-# module's attribute afterwards does not change that already-bound
-# name. Patching run_audit_and_persist directly sidesteps that
-# entirely.
-#
-# app.generate_ai_explanation_for_finding is also monkeypatched with
-# a fake so this never makes a real Groq/Gemini call or needs API
-# keys. write_finding_review / write_ai_output are NOT patched --
-# with no SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY set in the test
-# environment they naturally raise PersistenceNotConfigured, which
-# app.py already catches and ignores, so persistence stays a no-op
-# here without any extra patching.
 
-def test_generate_button_appears_for_confirmed_finding_without_explanation(monkeypatch):
 
-    import types
+def test_generate_button_appears_for_confirmed_finding_without_explanation(
+    monkeypatch,
+):
+    """
+    Verify that:
 
-    import engine.audit_orchestration as audit_orchestration_module
-    import engine.ai_explanation_pipeline as pipeline_module
-    import engine.policy_registry as policy_registry_module
+    1. A CONFIRMED finding without an AI explanation displays
+       the "Generate AI explanation" button.
+
+    2. Clicking the button calls the frontend API client.
+
+    3. The returned explanation and recommendation are merged
+       into the finding.
+
+    Current architecture:
+
+        Streamlit app
+            |
+            v
+        frontend.api_client
+            |
+            v
+        FastAPI backend
+            |
+            v
+        engine / Supabase
+
+    Therefore the test patches frontend.api_client rather than
+    the engine layer.
+    """
+
+    import frontend.api_client as api_client_module
+
+    # ---------------------------------------------------------
+    # Confirmed finding without AI output
+    # ---------------------------------------------------------
 
     confirmed_finding = {
         "finding_id": "F-BTN-0001",
@@ -339,90 +580,171 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(monke
         "severity": "HIGH",
         "assessment_status": "FAIL",
         "finding_status": "CONFIRMED",
-        "expected": "Customer must have a CLEAR screening result.",
-        "actual": "Screening result is PENDING.",
-        "evidence": {"customer_id": "CUST999", "screening_status": "PENDING"},
+        "expected": (
+            "Customer must have a CLEAR screening result."
+        ),
+        "actual": (
+            "Screening result is PENDING."
+        ),
+        "evidence": {
+            "customer_id": "CUST999",
+            "screening_status": "PENDING",
+        },
         "policy_references": [
-            {"policy_id": "SCREENING-POLICY-001", "version": "1.0", "section": "Requirements"}
+            {
+                "policy_id": "SCREENING-POLICY-001",
+                "version": "1.0",
+                "section": "Requirements",
+            }
         ],
         "reviewed_by": "tester",
-        "review_timestamp": "2026-08-23T00:00:00Z",
+        "review_timestamp": (
+            "2026-08-23T00:00:00Z"
+        ),
         "reviewer_notes": None,
         "ai_explanation": None,
         "ai_recommendation": None,
     }
 
-    fake_pipeline_result = types.SimpleNamespace(
-        generated_findings=[confirmed_finding],
-        evaluation={},
-    )
-
-    fake_orchestrated_result = types.SimpleNamespace(
-        pipeline_result=fake_pipeline_result,
-        persistence=types.SimpleNamespace(
-            attempted=False,
-            persisted=False,
-            reason=None,
-        ),
-    )
-
-    # app.py execs fresh inside AppTest's own sandbox -- patching an
-    # already-imported `app` module object does nothing there.
-    # Patching the SOURCE modules works, because app.py's
-    # `from x import y` statements re-resolve against these module
-    # objects' current attributes on every fresh exec, and Python's
-    # module cache (sys.modules) is shared process-wide.
-    monkeypatch.setattr(
-        audit_orchestration_module,
-        "run_audit_and_persist",
-        lambda *args, **kwargs: fake_orchestrated_result,
-    )
-    monkeypatch.setattr(
-        policy_registry_module,
-        "load_policy_registry",
-        lambda data_dir: object(),
-    )
-    monkeypatch.setattr(
-    persistence_module,
-    "write_findings",
-    lambda *args, **kwargs: [],
-)
+    # ---------------------------------------------------------
+    # Fake backend: run audit
+    # ---------------------------------------------------------
 
     monkeypatch.setattr(
-    persistence_module,
-    "write_ai_output",
-    lambda *args, **kwargs: {},
-)
-
-    def _fake_generate(finding, registry, primary=None, fallback=None):
-        finding["ai_explanation"] = "Fake grounded explanation."
-        finding["ai_recommendation"] = "Fake recommendation."
-        return types.SimpleNamespace(
-            succeeded=True,
-            error=None,
-            finding_id=finding["finding_id"],
-        )
-
-    monkeypatch.setattr(
-        pipeline_module,
-        "generate_ai_explanation_for_finding",
-        _fake_generate,
+        api_client_module,
+        "run_audit",
+        lambda: {
+            "audit_run_id": "RUN-BTN",
+        },
     )
 
-    at = AppTest.from_file("../app.py")
+    # ---------------------------------------------------------
+    # Fake backend: get findings
+    # ---------------------------------------------------------
+
+    monkeypatch.setattr(
+        api_client_module,
+        "get_findings",
+        lambda audit_run_id=None: [
+            confirmed_finding
+        ],
+    )
+
+    # ---------------------------------------------------------
+    # Fake backend: get evaluation
+    # ---------------------------------------------------------
+
+    monkeypatch.setattr(
+        api_client_module,
+        "get_evaluation",
+        lambda audit_run_id: None,
+    )
+
+    # ---------------------------------------------------------
+    # Fake backend: generate AI explanation
+    # ---------------------------------------------------------
+
+    def fake_generate_ai_explanation(
+        finding_id,
+    ):
+        assert finding_id == "F-BTN-0001"
+
+        return {
+            "finding_id": finding_id,
+            "ai_explanation": (
+                "Fake grounded explanation."
+            ),
+            "ai_recommendation": (
+                "Fake recommendation."
+            ),
+        }
+
+    monkeypatch.setattr(
+        api_client_module,
+        "generate_ai_explanation",
+        fake_generate_ai_explanation,
+    )
+
+    # ---------------------------------------------------------
+    # Start Streamlit AppTest
+    # ---------------------------------------------------------
+    #
+    # IMPORTANT:
+    #
+    # The actual Streamlit app is located at:
+    #
+    #     frontend/app.py
+    #
+    # Since this test file is:
+    #
+    #     tests/test_app.py
+    #
+    # the correct relative path is:
+    #
+    #     ../frontend/app.py
+    #
+    # NOT:
+    #
+    #     ../app.py
+    #
+    # ---------------------------------------------------------
+
+    at = AppTest.from_file(
+        "../frontend/app.py"
+    )
+
+    # ---------------------------------------------------------
+    # Open the finding detail view
+    # ---------------------------------------------------------
+
     at.session_state["view"] = "detail"
-    at.session_state["selected_finding_id"] = "F-BTN-0001"
+    at.session_state["selected_finding_id"] = (
+        "F-BTN-0001"
+    )
+
     at.run()
+
+    # ---------------------------------------------------------
+    # The app itself must not crash
+    # ---------------------------------------------------------
 
     assert not at.exception
 
+    # ---------------------------------------------------------
+    # Verify Generate AI explanation button appears
+    # ---------------------------------------------------------
+
     generate_buttons = [
-        b for b in at.button if "Generate AI explanation" in b.label
+        button
+        for button in at.button
+        if "Generate AI explanation" in button.label
     ]
+
     assert len(generate_buttons) == 1
+
+    # ---------------------------------------------------------
+    # Click the button
+    # ---------------------------------------------------------
 
     generate_buttons[0].click().run()
 
+    # ---------------------------------------------------------
+    # App must still not crash
+    # ---------------------------------------------------------
+
     assert not at.exception
-    assert confirmed_finding["ai_explanation"] == "Fake grounded explanation."
-    assert confirmed_finding["ai_recommendation"] == "Fake recommendation."
+
+    # ---------------------------------------------------------
+    # Verify returned AI output was merged
+    # into the finding
+    # ---------------------------------------------------------
+
+    assert (
+        confirmed_finding["ai_explanation"]
+        == "Fake grounded explanation."
+    )
+
+    assert (
+        confirmed_finding["ai_recommendation"]
+        == "Fake recommendation."
+    )

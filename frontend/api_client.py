@@ -17,42 +17,36 @@ Both must be set in the SAME terminal session that runs
 `streamlit run frontend/app.py`, since environment variables don't
 carry over between separate terminal windows.
 """
-
 from __future__ import annotations
 
 import os
+import uuid
 
 import requests
 
-API_BASE = os.environ.get("APP_API_BASE", "http://127.0.0.1:8000")
+
+API_BASE = os.environ.get(
+    "APP_API_BASE",
+    "http://127.0.0.1:8000",
+)
 
 _raw_keys = os.environ.get("APP_API_KEYS", "")
-API_KEY = _raw_keys.split(",")[0].strip() if _raw_keys else ""
 
-HEADERS = {"X-API-Key": API_KEY}
+API_KEY = (
+    _raw_keys.split(",")[0].strip()
+    if _raw_keys
+    else ""
+)
+
+HEADERS = {
+    "X-API-Key": API_KEY,
+}
 
 DEFAULT_TIMEOUT = 15
-AUDIT_TIMEOUT = 120  # running the full pipeline / calling the LLM can take longer
-
+AUDIT_TIMEOUT = 120
 
 class BackendError(RuntimeError):
     """Raised when the backend responds but reports status != success."""
-
-
-# Fields safe to merge back into the in-memory finding dict after a
-# PATCH /findings/{id} call. Supabase's row also carries columns like
-# created_at/updated_at that the AI input schema (engine.ai_input)
-# doesn't expect -- merging the raw response wholesale breaks
-# generate_ai_explanation_for_finding() with an
-# "Additional properties are not allowed" error. Whitelisting keeps
-# the finding dict's shape identical to what it was before Confirm/
-# Reject, just with these fields updated.
-REVIEW_MERGE_FIELDS = {
-    "finding_status",
-    "reviewed_by",
-    "reviewer_notes",
-    "review_timestamp",
-}
 
 
 def _unwrap(response: requests.Response) -> dict:
@@ -62,32 +56,38 @@ def _unwrap(response: requests.Response) -> dict:
     """
 
     response.raise_for_status()
+
     data = response.json()
 
     status = data.get("status")
 
     if status == "not_found":
-        raise BackendError(data.get("message", "Not found."))
+        raise BackendError(
+            data.get("message", "Not found.")
+        )
 
     if status == "error":
-        raise BackendError(data.get("message", "Unknown backend error."))
+        raise BackendError(
+            data.get("message", "Unknown backend error.")
+        )
 
     return data
 
 
-def run_audit() -> dict:
+def run_audit(idempotency_key: str) -> dict:
     """
-    Trigger POST /audit-runs/execute.
+    Trigger POST /audit-runs/execute with an explicit
+    idempotency key.
+    """
 
-    Runs the deterministic audit pipeline on the backend and persists
-    the audit run + findings to Supabase. Returns the execution
-    summary (audit_run_id, counts, report) -- call get_findings()
-    afterwards to fetch the actual finding records.
-    """
+    headers = {
+        **HEADERS,
+        "Idempotency-Key": idempotency_key,
+    }
 
     response = requests.post(
         f"{API_BASE}/audit-runs/execute",
-        headers=HEADERS,
+        headers=headers,
         timeout=AUDIT_TIMEOUT,
     )
 
@@ -173,12 +173,14 @@ def generate_ai_explanation(finding_id: str) -> dict:
     """
     Trigger POST /findings/{id}/ai-explanation.
 
-    Runs Stage 3 (RAG retrieval + LLM call + output validation) on
-    the backend and persists the result. Uses AUDIT_TIMEOUT instead
-    of DEFAULT_TIMEOUT since the LLM call can take a while.
+    Runs Stage 3 (RAG retrieval + LLM call + output validation)
+    on the backend and persists the result.
 
-    Returns a dict with at least: finding_id, ai_explanation,
-    ai_recommendation.
+    If AI generation succeeds but persistence fails, the backend
+    returns status="success" together with a persistence warning.
+    That condition is treated as a BackendError here so the
+    frontend does not silently treat an unpersisted explanation
+    as a successful operation.
     """
 
     response = requests.post(
@@ -188,6 +190,21 @@ def generate_ai_explanation(finding_id: str) -> dict:
     )
 
     data = _unwrap(response)
+
+    # ---------------------------------------------------------
+    # Persistence failure
+    # ---------------------------------------------------------
+    # Backend may return HTTP 200 + status="success" when the
+    # explanation was generated but could not be persisted.
+    # Do NOT silently return the finding in that case.
+    if data.get("persist_error"):
+        raise BackendError(
+            data.get(
+                "warning",
+                "AI explanation was generated but could not be persisted.",
+            )
+        )
+
     return data["finding"]
 
 
