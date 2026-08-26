@@ -98,8 +98,7 @@ app = FastAPI(
     title="AI-Powered Pre-Audit Platform",
     version="1.0.0",
 )
-require_api_key_configured()  # fails loudly if APP_API_KEYS isn't set
-
+require_api_key_configured()  
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("APP_CORS_ORIGINS", "").split(",") if os.environ.get("APP_CORS_ORIGINS") else [],
