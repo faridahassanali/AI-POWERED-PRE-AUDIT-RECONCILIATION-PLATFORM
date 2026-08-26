@@ -27,24 +27,26 @@ Findings are loaded through the FastAPI backend (backend/main.py):
 The backend runs the deterministic audit pipeline and persists the
 audit run + findings to Supabase itself. No mock findings are used.
 
-Evaluation metrics (TP/FP/FN, Precision/Recall/F1) are NOT yet
-exposed by the backend, so the dashboard currently shows them as
-zero/placeholder until a /audit-runs/{id}/evaluation-style endpoint
-is added. Everything else on the dashboard (severity/status
-breakdowns, run summary) is computed from the real findings and is
-unaffected.
+Evaluation metrics (TP/FP/FN, Precision/Recall/F1) are fetched via
+frontend.api_client.get_evaluation() -> GET /audit-runs/{id}/evaluation.
+If no evaluation has been persisted yet for the current audit run,
+that call returns None and the dashboard falls back to showing
+zero/placeholder values -- see _evaluation_value() below.
 
 Persistence
 -----------
-Confirm / Reject decisions go through PATCH /findings/{id}, which
-the backend persists to Supabase (findings + finding_reviews) itself
--- there is no more best-effort local write for these two actions.
+Confirm / Reject decisions go through PATCH /findings/{id}, which the
+backend persists to Supabase (findings + finding_reviews) itself.
+Confirming a finding also makes the backend generate and persist the
+deterministic Stage 2 explanation automatically -- the frontend no
+longer calls engine.finding_explainer directly.
 
-AI explanation generation (Stage 3) is NOT yet exposed by the
-backend, so it still calls engine.ai_explanation_pipeline directly,
-same as before. This is a deliberate, temporary hybrid: everything
-the backend already supports goes through the API; everything it
-doesn't yet support keeps working exactly as it did.
+AI explanation generation (Stage 3) now goes through
+POST /findings/{id}/ai-explanation instead of calling
+engine.ai_explanation_pipeline directly from inside the Streamlit
+process. This means the frontend no longer needs
+SUPABASE_SERVICE_ROLE_KEY / GROQ_API_KEY / GEMINI_API_KEY -- only
+APP_API_BASE and APP_API_KEYS, same as everything else.
 """
 
 from __future__ import annotations
@@ -64,20 +66,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 import streamlit as st
 
-from engine.ai_explanation_pipeline import generate_ai_explanation_for_finding
-from engine.data_loader import DATA_DIR
-from engine.finding_explainer import explain_finding
-from engine.persistence import (
-    PersistenceNotConfigured,
-    write_ai_output,
-    write_finding_explanation,
-    write_findings,
-)
-from engine.policy_registry import load_policy_registry
-
 from frontend.api_client import (
     BackendError,
     REVIEW_MERGE_FIELDS,
+    generate_ai_explanation,
+    get_evaluation,
     get_findings,
     run_audit,
     update_finding,
@@ -232,51 +225,54 @@ def render_color_legend(items: list[tuple[str, str, str]]) -> None:
 def load_pipeline_result():
     """
     Run the audit pipeline via the backend and fetch the resulting
-    findings, once per session.
+    findings + evaluation, once per session.
 
     Flow:
-        frontend.api_client.run_audit()     -> POST /audit-runs/execute
-        frontend.api_client.get_findings()  -> GET  /findings
+        frontend.api_client.run_audit()       -> POST /audit-runs/execute
+        frontend.api_client.get_findings()    -> GET  /findings
+        frontend.api_client.get_evaluation()  -> GET  /audit-runs/{id}/evaluation
 
     Returns a SimpleNamespace shaped like the old in-process pipeline
     result (`.generated_findings`, `.evaluation`) so the rest of this
     file -- render_dashboard(), main(), etc. -- doesn't need to change.
 
-    `.evaluation` is None for now: the backend doesn't expose
-    evaluation metrics yet. _evaluation_value() below already
-    defaults missing fields to 0 / 0.0, so the dashboard renders
-    fine with placeholders until that endpoint exists.
+    `.evaluation` is None if the backend hasn't persisted an
+    evaluation row for this audit run yet. _evaluation_value() below
+    already defaults missing fields to 0 / 0.0, so the dashboard
+    renders fine with placeholders in that case.
     """
 
+    audit_run_id = ""
+    findings: list[dict] = []
+    evaluation = None
+
     try:
-        run_audit()
-        findings = get_findings()
+        run_result = run_audit()
+        audit_run_id = run_result.get("audit_run_id", "")
+        findings = get_findings(audit_run_id=audit_run_id)
     except BackendError as exc:
         st.error(f"Backend error while loading findings: {exc}")
-        findings = []
     except Exception as exc:  # network errors, timeouts, etc.
         st.error(
             "Couldn't reach the backend. Make sure uvicorn is running "
             f"on {os.environ.get('APP_API_BASE', 'http://127.0.0.1:8000')} "
             f"with the same APP_API_KEYS set. ({exc})"
         )
-        findings = []
+
+    if audit_run_id:
+        try:
+            evaluation = get_evaluation(audit_run_id)
+        except BackendError:
+            # No evaluation endpoint data yet for this run -- keep
+            # showing placeholders rather than breaking the page.
+            evaluation = None
+        except Exception:
+            evaluation = None
 
     return SimpleNamespace(
         generated_findings=findings,
-        evaluation=None,
+        evaluation=evaluation,
     )
-
-
-@st.cache_resource(show_spinner="Loading policy registry...")
-def load_registry():
-    """
-    Load the Policy Registry once per session.
-
-    Still loaded locally for the AI explanation step (Stage 3), which
-    has not yet been moved behind the backend.
-    """
-    return load_policy_registry(DATA_DIR)
 
 
 def get_finding_by_id(
@@ -1068,33 +1064,12 @@ def render_finding_detail(
                             }
                         )
 
-                        # Immediately generate and persist the
-                        # deterministic Stage 2 explanation -- no
-                        # LLM, cannot hallucinate, always available
-                        # the moment a finding is confirmed. This is
-                        # separate from the AI explanation (Stage 3,
-                        # generated on-demand below via the
-                        # "Generate AI explanation" button) and is
-                        # still handled locally since the backend
-                        # doesn't expose it yet.
-                        try:
-                            deterministic_explanation = explain_finding(
-                                finding
-                            )
-
-                            try:
-                                write_finding_explanation(
-                                    deterministic_explanation
-                                )
-                            except PersistenceNotConfigured:
-                                pass
-
-                        except ValueError:
-                            # explain_finding() only raises if the
-                            # finding isn't CONFIRMED -- unreachable
-                            # here since the backend just set it,
-                            # but guarded rather than assumed.
-                            pass
+                        # The deterministic Stage 2 explanation is now
+                        # generated and persisted automatically by the
+                        # backend (see update_finding() in
+                        # backend/main.py) the moment finding_status
+                        # transitions to CONFIRMED -- nothing to do
+                        # here anymore.
 
                         st.success(
                             "Finding confirmed."
@@ -1189,10 +1164,9 @@ def render_finding_detail(
     # =====================================================
     # AI OUTPUT
     # =====================================================
-    # NOTE: still calls engine.ai_explanation_pipeline directly.
-    # The backend doesn't expose an AI-explanation endpoint yet --
-    # this stays as-is until that's added, per the plan to link the
-    # backend-supported features first.
+    # Generation now goes through POST /findings/{id}/ai-explanation
+    # instead of calling engine.ai_explanation_pipeline directly --
+    # see frontend.api_client.generate_ai_explanation().
 
     with tab_ai:
 
@@ -1241,40 +1215,40 @@ def render_finding_detail(
                 key=f"generate_ai_{finding['finding_id']}",
             ):
 
-                registry = load_registry()
-
                 with st.spinner(
                     "Retrieving policy context and calling the LLM..."
                 ):
 
-                    result = generate_ai_explanation_for_finding(
-                        finding,
-                        registry=registry,
-                    )
-
-                if result.succeeded:
-
                     try:
-                        write_findings([finding])
-                        write_ai_output(finding)
-                    except PersistenceNotConfigured:
-                        # Supabase is optional -- the explanation
-                        # still shows in the UI even if it can't be
-                        # persisted.
-                        pass
+                        data = generate_ai_explanation(
+                            finding["finding_id"]
+                        )
 
-                    st.success(
-                        "AI explanation generated."
-                    )
+                    except BackendError as exc:
 
-                    st.rerun()
+                        st.error(
+                            f"Could not generate an AI explanation: "
+                            f"{exc}"
+                        )
 
-                else:
+                    else:
 
-                    st.error(
-                        f"Could not generate an AI explanation: "
-                        f"{result.error}"
-                    )
+                        finding.update(
+                            {
+                                key: data[key]
+                                for key in (
+                                    "ai_explanation",
+                                    "ai_recommendation",
+                                )
+                                if key in data
+                            }
+                        )
+
+                        st.success(
+                            "AI explanation generated."
+                        )
+
+                        st.rerun()
 
         else:
 
@@ -1298,9 +1272,9 @@ def _evaluation_value(
     """
     Read a field from either a dataclass/object or dict.
 
-    Also handles evaluation=None gracefully (current state, since
-    the backend doesn't expose evaluation metrics yet) by falling
-    through to `default`.
+    Also handles evaluation=None gracefully (the case where the
+    backend hasn't persisted an evaluation row for this audit run
+    yet) by falling through to `default`.
     """
 
     if hasattr(
@@ -1351,11 +1325,12 @@ def render_dashboard(
     """
     Render Person C dashboard.
 
-    TP / FP / FN / Precision / Recall / F1 currently show as
-    placeholders (0 / 0.000) because evaluation is None until the
-    backend exposes an evaluation endpoint -- see load_pipeline_result().
+    TP / FP / FN / Precision / Recall / F1 come from
+    GET /audit-runs/{id}/evaluation (see load_pipeline_result()).
+    If nothing has been persisted to audit_evaluations for the
+    current run yet, they show as placeholders (0 / 0.000).
     Severity/status distribution and run summary are computed from
-    the real findings and are fully live.
+    the real findings and are always live.
     """
 
     render_page_header("Audit Dashboard", "📊")
@@ -1366,9 +1341,8 @@ def render_dashboard(
 
     if evaluation is None:
         st.caption(
-            "⚠️ Evaluation metrics (TP/FP/FN, Precision/Recall/F1) "
-            "aren't exposed by the backend yet — showing placeholders "
-            "below until that endpoint is added."
+            "⚠️ No evaluation has been recorded for this audit run "
+            "yet — showing placeholders below."
         )
 
     # -----------------------------------------------------
@@ -1857,9 +1831,8 @@ def main() -> None:
     st.sidebar.divider()
 
     st.sidebar.caption(
-        "Findings and confirm/reject actions go through the "
-        "FastAPI backend. AI explanation generation is still "
-        "handled locally until the backend exposes it."
+        "Findings, confirm/reject actions, and AI explanation "
+        "generation all go through the FastAPI backend."
     )
 
     # -----------------------------------------------------
