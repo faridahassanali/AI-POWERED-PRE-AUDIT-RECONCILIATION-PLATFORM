@@ -16,8 +16,8 @@ Checks, in order:
     5. Indexes             -- do the indexes from the migrations exist?
     6. Row Level Security  -- is RLS actually enabled on every table
                              that's supposed to have it?
-    7. Grants               -- does service_role have the privileges
-                             it needs on every table?
+    7. Grants              -- do service_role and anon have the
+                             privileges they need on every table?
 
 Usage
 -----
@@ -172,10 +172,12 @@ EXPECTED_TABLES: dict[str, list[str]] = {
     ],
 }
 
+
 # (table, column) primary keys we expect. Composite/identity PKs are
 # checked by presence of a PRIMARY KEY constraint on the table, not
 # by exact column match, since identity columns are enough here.
 EXPECTED_PRIMARY_KEY_TABLES = set(EXPECTED_TABLES.keys())
+
 
 # (table, column, references_table) -- foreign keys we expect to exist.
 EXPECTED_FOREIGN_KEYS: list[tuple[str, str, str]] = [
@@ -190,6 +192,7 @@ EXPECTED_FOREIGN_KEYS: list[tuple[str, str, str]] = [
     ("audit_evaluations", "audit_run_id", "audit_runs"),
 ]
 
+
 EXPECTED_INDEXES: list[str] = [
     "idx_findings_audit_run",
     "idx_findings_control",
@@ -202,12 +205,40 @@ EXPECTED_INDEXES: list[str] = [
     "idx_policy_versions_policy",
 ]
 
+
 EXPECTED_RLS_TABLES = set(EXPECTED_TABLES.keys())
+
+
+# ---------------------------------------------------------------------
+# service_role grants
+# ---------------------------------------------------------------------
 
 # Privileges service_role must hold on every table, per
 # 20260824110000_service_role_grants.sql.
-EXPECTED_SERVICE_ROLE_PRIVILEGES = {"SELECT", "INSERT", "UPDATE"}
+EXPECTED_SERVICE_ROLE_PRIVILEGES = {
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+}
+
 EXPECTED_SERVICE_ROLE_GRANT_TABLES = set(EXPECTED_TABLES.keys())
+
+
+# ---------------------------------------------------------------------
+# anon grants
+# ---------------------------------------------------------------------
+
+# Privileges anon must hold on every table exposed through PostgREST.
+#
+# RLS policies control WHICH rows anon can access.
+# GRANT controls WHETHER anon can access the table at all.
+#
+# Both are required.
+EXPECTED_ANON_PRIVILEGES = {
+    "SELECT",
+}
+
+EXPECTED_ANON_GRANT_TABLES = set(EXPECTED_TABLES.keys())
 
 
 # =====================================================================
@@ -225,8 +256,19 @@ class CheckResult:
 class Report:
     results: list[CheckResult] = field(default_factory=list)
 
-    def add(self, name: str, passed: bool, details: list[str] | None = None) -> None:
-        self.results.append(CheckResult(name=name, passed=passed, details=details or []))
+    def add(
+        self,
+        name: str,
+        passed: bool,
+        details: list[str] | None = None,
+    ) -> None:
+        self.results.append(
+            CheckResult(
+                name=name,
+                passed=passed,
+                details=details or [],
+            )
+        )
 
     @property
     def all_passed(self) -> bool:
@@ -234,22 +276,33 @@ class Report:
 
     def render(self) -> str:
         lines = []
+
         lines.append("=" * 64)
         lines.append("DATABASE PREFLIGHT VERIFICATION")
         lines.append("=" * 64)
 
         for result in self.results:
             status = "PASS" if result.passed else "FAIL"
+
             lines.append("")
             lines.append(f"[{status}] {result.name}")
+
             for detail in result.details:
                 lines.append(f"    - {detail}")
 
         lines.append("")
         lines.append("=" * 64)
+
         total = len(self.results)
-        passed = sum(1 for r in self.results if r.passed)
-        lines.append(f"RESULT: {passed}/{total} checks passed")
+        passed = sum(
+            1 for r in self.results
+            if r.passed
+        )
+
+        lines.append(
+            f"RESULT: {passed}/{total} checks passed"
+        )
+
         lines.append("=" * 64)
 
         return "\n".join(lines)
@@ -264,9 +317,19 @@ def check_connection(conn) -> CheckResult:
         with conn.cursor() as cur:
             cur.execute("SELECT 1;")
             cur.fetchone()
-        return CheckResult("Connection", True, ["Connected successfully."])
+
+        return CheckResult(
+            "Connection",
+            True,
+            ["Connected successfully."],
+        )
+
     except Exception as exc:
-        return CheckResult("Connection", False, [f"Could not connect: {exc}"])
+        return CheckResult(
+            "Connection",
+            False,
+            [f"Could not connect: {exc}"],
+        )
 
 
 def _fetch_existing_tables(cur) -> set[str]:
@@ -274,28 +337,42 @@ def _fetch_existing_tables(cur) -> set[str]:
         """
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
+        WHERE table_schema = 'public'
+          AND table_type = 'BASE TABLE';
         """
     )
-    return {row[0] for row in cur.fetchall()}
+
+    return {
+        row[0]
+        for row in cur.fetchall()
+    }
 
 
 def check_tables(cur) -> CheckResult:
     existing = _fetch_existing_tables(cur)
+
     expected = set(EXPECTED_TABLES.keys())
-    missing = sorted(expected - existing)
+
+    missing = sorted(
+        expected - existing
+    )
 
     if missing:
         return CheckResult(
             "Tables",
             False,
-            [f"Missing table: {name}" for name in missing],
+            [
+                f"Missing table: {name}"
+                for name in missing
+            ],
         )
 
     return CheckResult(
         "Tables",
         True,
-        [f"All {len(expected)} expected tables exist."],
+        [
+            f"All {len(expected)} expected tables exist."
+        ],
     )
 
 
@@ -304,30 +381,47 @@ def check_columns(cur) -> CheckResult:
     all_ok = True
 
     for table, expected_columns in EXPECTED_TABLES.items():
+
         cur.execute(
             """
             SELECT column_name
             FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s;
+            WHERE table_schema = 'public'
+              AND table_name = %s;
             """,
             (table,),
         )
-        existing_columns = {row[0] for row in cur.fetchall()}
+
+        existing_columns = {
+            row[0]
+            for row in cur.fetchall()
+        }
 
         if not existing_columns:
             # Table itself missing -- already reported by check_tables.
             continue
 
-        missing = sorted(set(expected_columns) - existing_columns)
+        missing = sorted(
+            set(expected_columns) - existing_columns
+        )
 
         if missing:
             all_ok = False
-            details.append(f"{table}: missing column(s) {missing}")
+
+            details.append(
+                f"{table}: missing column(s) {missing}"
+            )
 
     if all_ok:
-        details.append("All expected columns present on all expected tables.")
+        details.append(
+            "All expected columns present on all expected tables."
+        )
 
-    return CheckResult("Columns", all_ok, details)
+    return CheckResult(
+        "Columns",
+        all_ok,
+        details,
+    )
 
 
 def check_primary_keys(cur) -> CheckResult:
@@ -335,6 +429,7 @@ def check_primary_keys(cur) -> CheckResult:
     all_ok = True
 
     for table in sorted(EXPECTED_PRIMARY_KEY_TABLES):
+
         cur.execute(
             """
             SELECT constraint_name
@@ -345,18 +440,27 @@ def check_primary_keys(cur) -> CheckResult:
             """,
             (table,),
         )
+
         rows = cur.fetchall()
 
         if not rows:
             all_ok = False
-            details.append(f"{table}: no PRIMARY KEY constraint found")
+
+            details.append(
+                f"{table}: no PRIMARY KEY constraint found"
+            )
 
     if all_ok:
         details.append(
-            f"All {len(EXPECTED_PRIMARY_KEY_TABLES)} tables have a primary key."
+            f"All {len(EXPECTED_PRIMARY_KEY_TABLES)} "
+            "tables have a primary key."
         )
 
-    return CheckResult("Primary Keys", all_ok, details)
+    return CheckResult(
+        "Primary Keys",
+        all_ok,
+        details,
+    )
 
 
 def check_foreign_keys(cur) -> CheckResult:
@@ -380,21 +484,39 @@ def check_foreign_keys(cur) -> CheckResult:
           AND tc.table_schema = 'public';
         """
     )
-    existing_fks = {(row[0], row[1], row[2]) for row in cur.fetchall()}
+
+    existing_fks = {
+        (row[0], row[1], row[2])
+        for row in cur.fetchall()
+    }
 
     for table, column, references_table in EXPECTED_FOREIGN_KEYS:
-        if (table, column, references_table) not in existing_fks:
+
+        if (
+            table,
+            column,
+            references_table,
+        ) not in existing_fks:
+
             all_ok = False
+
             details.append(
-                f"{table}.{column} -> {references_table}: foreign key not found"
+                f"{table}.{column} -> "
+                f"{references_table}: "
+                "foreign key not found"
             )
 
     if all_ok:
         details.append(
-            f"All {len(EXPECTED_FOREIGN_KEYS)} expected foreign keys present."
+            f"All {len(EXPECTED_FOREIGN_KEYS)} "
+            "expected foreign keys present."
         )
 
-    return CheckResult("Foreign Keys", all_ok, details)
+    return CheckResult(
+        "Foreign Keys",
+        all_ok,
+        details,
+    )
 
 
 def check_indexes(cur) -> CheckResult:
@@ -405,21 +527,33 @@ def check_indexes(cur) -> CheckResult:
         WHERE schemaname = 'public';
         """
     )
-    existing = {row[0] for row in cur.fetchall()}
 
-    missing = sorted(set(EXPECTED_INDEXES) - existing)
+    existing = {
+        row[0]
+        for row in cur.fetchall()
+    }
+
+    missing = sorted(
+        set(EXPECTED_INDEXES) - existing
+    )
 
     if missing:
         return CheckResult(
             "Indexes",
             False,
-            [f"Missing index: {name}" for name in missing],
+            [
+                f"Missing index: {name}"
+                for name in missing
+            ],
         )
 
     return CheckResult(
         "Indexes",
         True,
-        [f"All {len(EXPECTED_INDEXES)} expected indexes exist."],
+        [
+            f"All {len(EXPECTED_INDEXES)} "
+            "expected indexes exist."
+        ],
     )
 
 
@@ -428,31 +562,51 @@ def check_rls_enabled(cur) -> CheckResult:
         """
         SELECT c.relname, c.relrowsecurity
         FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' AND c.relkind = 'r';
+        JOIN pg_namespace n
+          ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r';
         """
     )
-    rows = {row[0]: row[1] for row in cur.fetchall()}
+
+    rows = {
+        row[0]: row[1]
+        for row in cur.fetchall()
+    }
 
     details: list[str] = []
     all_ok = True
 
     for table in sorted(EXPECTED_RLS_TABLES):
+
         rls_enabled = rows.get(table)
 
         if rls_enabled is None:
             all_ok = False
-            details.append(f"{table}: table not found while checking RLS")
+
+            details.append(
+                f"{table}: table not found "
+                "while checking RLS"
+            )
+
         elif not rls_enabled:
             all_ok = False
-            details.append(f"{table}: RLS is NOT enabled")
+
+            details.append(
+                f"{table}: RLS is NOT enabled"
+            )
 
     if all_ok:
         details.append(
-            f"RLS is enabled on all {len(EXPECTED_RLS_TABLES)} expected tables."
+            f"RLS is enabled on all "
+            f"{len(EXPECTED_RLS_TABLES)} expected tables."
         )
 
-    return CheckResult("Row Level Security", all_ok, details)
+    return CheckResult(
+        "Row Level Security",
+        all_ok,
+        details,
+    )
 
 
 def check_service_role_grants(cur) -> CheckResult:
@@ -460,33 +614,117 @@ def check_service_role_grants(cur) -> CheckResult:
         """
         SELECT table_name, privilege_type
         FROM information_schema.role_table_grants
-        WHERE grantee = 'service_role' AND table_schema = 'public';
+        WHERE grantee = 'service_role'
+          AND table_schema = 'public';
         """
     )
 
     grants_by_table: dict[str, set[str]] = {}
+
     for table_name, privilege_type in cur.fetchall():
-        grants_by_table.setdefault(table_name, set()).add(privilege_type)
+        grants_by_table.setdefault(
+            table_name,
+            set(),
+        ).add(privilege_type)
 
     details: list[str] = []
     all_ok = True
 
-    for table in sorted(EXPECTED_SERVICE_ROLE_GRANT_TABLES):
-        held = grants_by_table.get(table, set())
-        missing = EXPECTED_SERVICE_ROLE_PRIVILEGES - held
+    for table in sorted(
+        EXPECTED_SERVICE_ROLE_GRANT_TABLES
+    ):
+
+        held = grants_by_table.get(
+            table,
+            set(),
+        )
+
+        missing = (
+            EXPECTED_SERVICE_ROLE_PRIVILEGES - held
+        )
 
         if missing:
             all_ok = False
+
             details.append(
-                f"{table}: service_role missing privilege(s) {sorted(missing)}"
+                f"{table}: service_role missing "
+                f"privilege(s) {sorted(missing)}"
             )
 
     if all_ok:
         details.append(
-            "service_role holds SELECT/INSERT/UPDATE on all expected tables."
+            "service_role holds "
+            "SELECT/INSERT/UPDATE on all expected tables."
         )
 
-    return CheckResult("Grants (service_role)", all_ok, details)
+    return CheckResult(
+        "Grants (service_role)",
+        all_ok,
+        details,
+    )
+
+
+def check_anon_grants(cur) -> CheckResult:
+    """
+    Verify that the anon role has the required table-level
+    SELECT privilege.
+
+    RLS policies alone are not sufficient. PostgreSQL first
+    requires the role to have the table privilege, and then
+    RLS determines which rows the role may access.
+    """
+
+    cur.execute(
+        """
+        SELECT table_name, privilege_type
+        FROM information_schema.role_table_grants
+        WHERE grantee = 'anon'
+          AND table_schema = 'public';
+        """
+    )
+
+    grants_by_table: dict[str, set[str]] = {}
+
+    for table_name, privilege_type in cur.fetchall():
+        grants_by_table.setdefault(
+            table_name,
+            set(),
+        ).add(privilege_type)
+
+    details: list[str] = []
+    all_ok = True
+
+    for table in sorted(
+        EXPECTED_ANON_GRANT_TABLES
+    ):
+
+        held = grants_by_table.get(
+            table,
+            set(),
+        )
+
+        missing = (
+            EXPECTED_ANON_PRIVILEGES - held
+        )
+
+        if missing:
+            all_ok = False
+
+            details.append(
+                f"{table}: anon missing "
+                f"privilege(s) {sorted(missing)}"
+            )
+
+    if all_ok:
+        details.append(
+            "anon holds SELECT on all expected tables."
+        )
+
+    return CheckResult(
+        "Grants (anon)",
+        all_ok,
+        details,
+    )
 
 
 # =====================================================================
@@ -494,7 +732,9 @@ def check_service_role_grants(cur) -> CheckResult:
 # =====================================================================
 
 def run_all_checks() -> Report:
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = os.environ.get(
+        "DATABASE_URL"
+    )
 
     report = Report()
 
@@ -503,33 +743,75 @@ def run_all_checks() -> Report:
             "Connection",
             False,
             [
-                "DATABASE_URL is not set. Example for local Supabase:",
+                "DATABASE_URL is not set. "
+                "Example for local Supabase:",
                 "  postgresql://postgres:postgres@127.0.0.1:54322/postgres",
             ],
         )
+
         return report
 
     try:
-        conn = psycopg2.connect(database_url, connect_timeout=10)
+        conn = psycopg2.connect(
+            database_url,
+            connect_timeout=10,
+        )
+
     except Exception as exc:
-        report.add("Connection", False, [f"Could not connect: {exc}"])
+        report.add(
+            "Connection",
+            False,
+            [f"Could not connect: {exc}"],
+        )
+
         return report
 
     try:
         conn_result = check_connection(conn)
-        report.results.append(conn_result)
+
+        report.results.append(
+            conn_result
+        )
 
         if not conn_result.passed:
             return report
 
         with conn.cursor() as cur:
-            report.results.append(check_tables(cur))
-            report.results.append(check_columns(cur))
-            report.results.append(check_primary_keys(cur))
-            report.results.append(check_foreign_keys(cur))
-            report.results.append(check_indexes(cur))
-            report.results.append(check_rls_enabled(cur))
-            report.results.append(check_service_role_grants(cur))
+
+            report.results.append(
+                check_tables(cur)
+            )
+
+            report.results.append(
+                check_columns(cur)
+            )
+
+            report.results.append(
+                check_primary_keys(cur)
+            )
+
+            report.results.append(
+                check_foreign_keys(cur)
+            )
+
+            report.results.append(
+                check_indexes(cur)
+            )
+
+            report.results.append(
+                check_rls_enabled(cur)
+            )
+
+            report.results.append(
+                check_service_role_grants(cur)
+            )
+
+            # NEW:
+            # Verify anon has table-level SELECT.
+            report.results.append(
+                check_anon_grants(cur)
+            )
+
     finally:
         conn.close()
 
@@ -538,8 +820,16 @@ def run_all_checks() -> Report:
 
 def main() -> int:
     report = run_all_checks()
-    print(report.render())
-    return 0 if report.all_passed else 1
+
+    print(
+        report.render()
+    )
+
+    return (
+        0
+        if report.all_passed
+        else 1
+    )
 
 
 if __name__ == "__main__":
