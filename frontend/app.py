@@ -50,7 +50,7 @@ APP_API_BASE and APP_API_KEYS, same as everything else.
 """
 
 from __future__ import annotations
-
+import uuid
 import os
 import sys
 from pathlib import Path
@@ -68,15 +68,19 @@ import streamlit as st
 
 from frontend.api_client import (
     BackendError,
-    REVIEW_MERGE_FIELDS,
     generate_ai_explanation,
     get_evaluation,
     get_findings,
     run_audit,
     update_finding,
 )
-
-
+REVIEW_MERGE_FIELDS = {
+    "finding_status",
+    "reviewed_by",
+    "reviewer_notes",
+    "ai_explanation",
+    "ai_recommendation",
+}
 # =========================================================
 # BRANDING / LOGO
 # =========================================================
@@ -220,39 +224,33 @@ def render_color_legend(items: list[tuple[str, str, str]]) -> None:
 # =========================================================
 # DATA ACCESS
 # =========================================================
+def _get_page_load_idempotency_key() -> str:
+    """One stable key per browser session, reused across reruns so
+    load_pipeline_result() never calls run_audit() with a missing or
+    changing key."""
+    if "page_load_idempotency_key" not in st.session_state:
+        st.session_state.page_load_idempotency_key = f"page-load-{uuid.uuid4().hex}"
+    return st.session_state.page_load_idempotency_key
+
 
 @st.cache_resource(show_spinner="Running audit pipeline...")
-def load_pipeline_result():
-    """
-    Run the audit pipeline via the backend and fetch the resulting
-    findings + evaluation, once per session.
-
-    Flow:
-        frontend.api_client.run_audit()       -> POST /audit-runs/execute
-        frontend.api_client.get_findings()    -> GET  /findings
-        frontend.api_client.get_evaluation()  -> GET  /audit-runs/{id}/evaluation
-
-    Returns a SimpleNamespace shaped like the old in-process pipeline
-    result (`.generated_findings`, `.evaluation`) so the rest of this
-    file -- render_dashboard(), main(), etc. -- doesn't need to change.
-
-    `.evaluation` is None if the backend hasn't persisted an
-    evaluation row for this audit run yet. _evaluation_value() below
-    already defaults missing fields to 0 / 0.0, so the dashboard
-    renders fine with placeholders in that case.
-    """
-
+def load_pipeline_result(idempotency_key: str):
     audit_run_id = ""
     findings: list[dict] = []
     evaluation = None
 
     try:
-        run_result = run_audit()
-        audit_run_id = run_result.get("audit_run_id", "")
+        run_result = run_audit(idempotency_key=idempotency_key)
+
+        if run_result.get("status") == "duplicate":
+            audit_run_id = run_result.get("audit_run", {}).get("audit_run_id", "")
+        else:
+            audit_run_id = run_result.get("audit_run_id", "")
+
         findings = get_findings(audit_run_id=audit_run_id)
     except BackendError as exc:
         st.error(f"Backend error while loading findings: {exc}")
-    except Exception as exc:  # network errors, timeouts, etc.
+    except Exception as exc:
         st.error(
             "Couldn't reach the backend. Make sure uvicorn is running "
             f"on {os.environ.get('APP_API_BASE', 'http://127.0.0.1:8000')} "
@@ -263,8 +261,6 @@ def load_pipeline_result():
         try:
             evaluation = get_evaluation(audit_run_id)
         except BackendError:
-            # No evaluation endpoint data yet for this run -- keep
-            # showing placeholders rather than breaking the page.
             evaluation = None
         except Exception:
             evaluation = None
@@ -1763,7 +1759,6 @@ def render_dashboard(
                     hide_index=True,
                 )
 
-
 # =========================================================
 # MAIN
 # =========================================================
@@ -1787,8 +1782,15 @@ def main() -> None:
     # -----------------------------------------------------
     # LOAD PIPELINE RESULT ONCE
     # -----------------------------------------------------
+    # FIX: load_pipeline_result() is wrapped in @st.cache_resource and
+    # now requires an idempotency_key argument (see run_audit()). It
+    # must be called with the stable per-session key from
+    # _get_page_load_idempotency_key() -- calling it with no
+    # arguments (as before) raises a TypeError from inside the cache
+    # wrapper on every rerun.
 
-    result = load_pipeline_result()
+    idempotency_key = _get_page_load_idempotency_key()
+    result = load_pipeline_result(idempotency_key)
 
     findings = result.generated_findings
     evaluation = result.evaluation
@@ -1834,6 +1836,15 @@ def main() -> None:
         "Findings, confirm/reject actions, and AI explanation "
         "generation all go through the FastAPI backend."
     )
+    st.sidebar.divider()
+    if st.sidebar.button("🔄 Re-run audit"):
+        # Rotate the idempotency key so run_audit() is treated as a
+        # brand-new run, then clear the cache so load_pipeline_result()
+        # actually re-executes instead of returning the old cached
+        # SimpleNamespace for the old key.
+        load_pipeline_result.clear()
+        st.session_state.page_load_idempotency_key = f"page-load-{uuid.uuid4().hex}"
+        st.rerun()
 
     # -----------------------------------------------------
     # PAGE ROUTING

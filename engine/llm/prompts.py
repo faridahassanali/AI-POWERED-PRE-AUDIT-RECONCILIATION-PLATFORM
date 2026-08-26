@@ -38,6 +38,20 @@ allowed to cite. If Task A/the bridge ever changes what a
 policy_context chunk looks like, the "content" key is the one
 field this prompt absolutely depends on -- everything else
 degrades gracefully if missing.
+
+OPTIONAL RETRY FIELD:
+
+    _retry_reminder    str | None
+
+This is NOT part of the ai_input contract build_ai_input() produces
+-- it is attached (and later discarded) by
+engine.ai_explanation_pipeline ONLY when a prior attempt for this
+same finding was rejected by the hallucination tripwire
+(engine.llm.hallucination_tripwire). When present, build_user_prompt()
+appends it as a clearly-marked correction block at the end of the
+user message, quoting the exact tripwire complaints, so the retried
+call is pointed directly at what it got wrong instead of blindly
+trying again with the same prompt.
 """
 
 import json
@@ -143,6 +157,19 @@ must be a subset of the policy_id values in policy_context>"]
    if it ignored what the reviewer wrote. If reviewer_notes is absent, \
    or does not conflict with the violation, skip this entirely -- do \
    not manufacture a rebuttal to a note that isn't there.
+
+10. NEVER CONFLATE SEVERITY WITH A STATUS VALUE. "severity" (LOW / \
+    MEDIUM / HIGH / CRITICAL) tells you how urgent this finding is -- \
+    it is NOT a screening/account/customer status and must never be \
+    restated as one. In particular, a finding with severity "HIGH" \
+    does NOT mean any field's value is "HIGH_RISK" -- those are two \
+    unrelated words. Only ever state that a specific field (e.g. a \
+    screening result, an account status) equals a given value when \
+    that exact value is literally present in this finding's own \
+    "evidence", "expected", or "actual" fields below. If you want to \
+    convey urgency, say "high severity" in plain prose -- never as a \
+    quoted or status-like token that could be mistaken for an \
+    evidence value.
 """
 
 
@@ -209,6 +236,7 @@ def build_user_prompt(ai_input: dict[str, Any]) -> str:
     evidence = _get(ai_input, "evidence", default={})
     reviewer_notes = _get(ai_input, "reviewer_notes", default=None)
     policy_context = _get(ai_input, "policy_context", default=[])
+    retry_reminder = _get(ai_input, "_retry_reminder", default=None)
 
     evidence_json = json.dumps(
         evidence,
@@ -232,6 +260,15 @@ def build_user_prompt(ai_input: dict[str, Any]) -> str:
     lines.append("")
     lines.append("policy_context (the ONLY policy text you may cite):")
     lines.append(_format_policy_context(policy_context))
+
+    if retry_reminder:
+        lines.append("")
+        lines.append("=== CORRECTION REQUIRED (previous attempt rejected) ===")
+        lines.append(str(retry_reminder))
+        lines.append(
+            "Rewrite the explanation/recommendation from scratch. Do not "
+            "repeat the rejected claim(s) above in any form."
+        )
 
     return "\n".join(lines)
 

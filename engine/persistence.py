@@ -100,7 +100,61 @@ def get_supabase_client() -> "Client":
 # =====================================================================
 # HELPERS
 # =====================================================================
+def claim_audit_idempotency(
+    audit_run_id: str,
+    idempotency_key: str,
+    client: "Client | None" = None,
+) -> dict[str, Any]:
+    """
+    Atomically claim an idempotency key for an audit run.
 
+    Returns:
+        {
+            "claimed": True,
+            "audit_run_id": "...",
+        }
+
+    If the idempotency key was already claimed, returns:
+        {
+            "claimed": False,
+            "audit_run_id": None,
+        }
+    """
+
+    if not audit_run_id or not audit_run_id.strip():
+        raise ValueError("audit_run_id must not be empty.")
+
+    if not idempotency_key or not idempotency_key.strip():
+        raise ValueError("idempotency_key must not be empty.")
+
+    client = client or get_supabase_client()
+
+    response = (
+        client
+        .rpc(
+            "claim_audit_idempotency",
+            {
+                "p_audit_run_id": audit_run_id,
+                "p_idempotency_key": idempotency_key,
+            },
+        )
+        .execute()
+    )
+
+    data = response.data or []
+
+    if not data:
+        return {
+            "claimed": False,
+            "audit_run_id": None,
+        }
+
+    row = data[0]
+
+    return {
+        "claimed": bool(row.get("claimed")),
+        "audit_run_id": row.get("audit_run_id"),
+    }
 
 def _trace_to_dict(audit_trace: Any) -> dict[str, Any]:
     """

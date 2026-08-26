@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from pydantic import BaseModel
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +26,7 @@ from engine.persistence import (
     write_ai_output,
     write_finding_explanation,
     write_audit_evaluation,
+    claim_audit_idempotency,
 )
 
 # =========================================================
@@ -144,6 +145,10 @@ class FindingUpdate(BaseModel):
     reviewer_notes: str | None = None
     ai_explanation: str | None = None
     ai_recommendation: str | None = None
+    
+class AuditExecuteRequest(BaseModel):
+    audit_run_id: str
+    idempotency_key: str
 
 
 # =========================================================
@@ -198,90 +203,194 @@ def database_health():
 # =========================================================
 
 @app.post("/audit-runs/execute")
-def execute_audit(_: str = Depends(verify_api_key)):
+def execute_audit(
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    _: str = Depends(verify_api_key),
+):
     """
-    Execute the existing deterministic audit pipeline.
+    Execute the deterministic audit pipeline exactly once
+    for each Idempotency-Key.
 
-    Flow:
+    Idempotency behavior:
+    - First request:
+        * atomically claims the Idempotency-Key
+        * executes the audit
+        * persists the audit result
+        * returns success
 
-        FastAPI
-            ↓
-        run_audit()
-            ↓
-        persistence
-            ↓
-        Supabase
+    - Duplicate request:
+        * does NOT execute the audit again
+        * returns the existing audit_run
+        * returns the original audit_run_id
     """
 
     try:
+        # -----------------------------------------------------
+        # 1. GENERATE AUDIT RUN ID
+        # -----------------------------------------------------
+        import uuid
+
+        audit_run_id = f"AUDIT-{uuid.uuid4().hex}"
 
         # -----------------------------------------------------
-        # 1. RUN EXISTING AUDIT ENGINE
+        # 2. ATOMICALLY CLAIM IDEMPOTENCY KEY
         # -----------------------------------------------------
-
-        result = run_audit()
+        claim_result = claim_audit_idempotency(
+            audit_run_id=audit_run_id,
+            idempotency_key=idempotency_key,
+        )
 
         # -----------------------------------------------------
-        # 2. SAVE AUDIT RUN
+        # TEMPORARY DEBUG
         # -----------------------------------------------------
+        print("=== IDEMPOTENCY DEBUG ===")
+        print("KEY:", idempotency_key)
+        print("GENERATED AUDIT RUN ID:", audit_run_id)
+        print("CLAIM RESULT:", claim_result)
+        print("=========================")
 
+        # -----------------------------------------------------
+        # 3. DUPLICATE REQUEST
+        # -----------------------------------------------------
+        if not claim_result["claimed"]:
+
+            existing_audit_run_id = claim_result.get(
+                "audit_run_id"
+            )
+
+            # The atomic RPC should always return the
+            # existing audit_run_id for a duplicate.
+            if not existing_audit_run_id:
+                return {
+                    "status": "error",
+                    "message": (
+                        "Idempotency key was already claimed, "
+                        "but no existing audit_run_id was returned."
+                    ),
+                }
+
+            # -------------------------------------------------
+            # Fetch the exact audit run returned by the RPC
+            # -------------------------------------------------
+            existing_response = (
+                supabase
+                .table("audit_runs")
+                .select("*")
+                .eq(
+                    "audit_run_id",
+                    existing_audit_run_id,
+                )
+                .limit(1)
+                .execute()
+            )
+
+            if not existing_response.data:
+                return {
+                    "status": "error",
+                    "message": (
+                        "Idempotency key was already claimed, "
+                        "but the existing audit run could not "
+                        "be found."
+                    ),
+                }
+
+            # -------------------------------------------------
+            # RETURN DUPLICATE
+            # -------------------------------------------------
+            return {
+                "status": "duplicate",
+                "message": (
+                    "Audit request with this Idempotency-Key "
+                    "has already been claimed."
+                ),
+                "audit_run": existing_response.data[0],
+            }
+
+        # -----------------------------------------------------
+        # 4. FIRST REQUEST → EXECUTE AUDIT
+        # -----------------------------------------------------
+        result = run_audit(
+            audit_run_id=audit_run_id,
+        )
+
+        # -----------------------------------------------------
+        # 5. SAVE AUDIT RUN
+        # -----------------------------------------------------
         audit_run_result = write_audit_run(
             result.audit_trace
         )
 
         # -----------------------------------------------------
-        # 3. SAVE GENERATED FINDINGS
+        # 6. SAVE FINDINGS
         # -----------------------------------------------------
-
         findings_result = write_findings(
             result.generated_findings
         )
 
         # -----------------------------------------------------
-        # 3b. SAVE EVALUATION METRICS
+        # 7. SAVE EVALUATION
         # -----------------------------------------------------
-
         try:
             write_audit_evaluation(
                 result.evaluation,
                 audit_run_id=result.audit_trace.audit_run_id,
             )
         except Exception as eval_error:
-            # Don't fail the whole audit run just because the
-            # evaluation row couldn't be persisted -- report it in
-            # the response instead. The dashboard will keep showing
-            # placeholders until this is fixed.
             evaluation_save_error = str(eval_error)
         else:
             evaluation_save_error = None
 
         # -----------------------------------------------------
-        # 4. RETURN SUMMARY
+        # 8. RETURN SUCCESS RESULT
         # -----------------------------------------------------
-
         return {
-    "status": "success",
-    "message": "Audit executed successfully.",
-    "audit_run_id": result.audit_trace.audit_run_id,
-    "total_records_evaluated": result.audit_trace.total_records_evaluated,
-    "total_findings_generated": result.audit_trace.total_findings_generated,
-    "audit_run_saved": len(audit_run_result) > 0,
-    "findings_saved": len(findings_result),
-    "evaluation_saved": evaluation_save_error is None,
-    "evaluation_save_error": evaluation_save_error,
-    "report": result.report,
-    "evaluation": {
-        "true_positives": result.evaluation.true_positives,
-        "false_positives": result.evaluation.false_positives,
-        "false_negatives": result.evaluation.false_negatives,
-        "precision": result.evaluation.precision,
-        "recall": result.evaluation.recall,
-        "f1_score": result.evaluation.f1_score,
-    },
-}
+            "status": "success",
+            "message": "Audit executed successfully.",
+            "audit_run_id": (
+                result.audit_trace.audit_run_id
+            ),
+            "total_records_evaluated": (
+                result.audit_trace.total_records_evaluated
+            ),
+            "total_findings_generated": (
+                result.audit_trace.total_findings_generated
+            ),
+            "audit_run_saved": (
+                len(audit_run_result) > 0
+            ),
+            "findings_saved": (
+                len(findings_result)
+            ),
+            "evaluation_saved": (
+                evaluation_save_error is None
+            ),
+            "evaluation_save_error": (
+                evaluation_save_error
+            ),
+            "report": result.report,
+            "evaluation": {
+                "true_positives": (
+                    result.evaluation.true_positives
+                ),
+                "false_positives": (
+                    result.evaluation.false_positives
+                ),
+                "false_negatives": (
+                    result.evaluation.false_negatives
+                ),
+                "precision": (
+                    result.evaluation.precision
+                ),
+                "recall": (
+                    result.evaluation.recall
+                ),
+                "f1_score": (
+                    result.evaluation.f1_score
+                ),
+            },
+        }
 
     except Exception as e:
-
         return {
             "status": "error",
             "message": str(e),

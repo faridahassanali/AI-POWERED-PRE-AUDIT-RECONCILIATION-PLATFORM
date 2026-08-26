@@ -72,13 +72,26 @@ from engine.ai_output_validation import (
 )
 from engine.data_loader import DATA_DIR
 from engine.llm.base import LLMError, LLMProvider
-from engine.llm.hallucination_tripwire import check_for_hallucinations_or_raise
+from engine.llm.hallucination_tripwire import (
+    HallucinationDetectedError,
+    check_for_hallucinations,
+)
 from engine.llm.router import explain
 from engine.policy_registry import PolicyRegistry, load_policy_registry
 from RAG.retriever import retrieve_for_finding
 
 
 logger = logging.getLogger(__name__)
+
+# One automatic retry after a hallucination-tripwire rejection, with a
+# reminder that names exactly what was rejected (see prompts.py's
+# "_retry_reminder" field). Kept small and non-configurable-by-caller
+# on purpose: this is a narrow, mechanical correction pass, not a
+# general "keep trying until it works" loop -- if the model still
+# hallucinates with the specific correction in front of it, that's a
+# real failure worth surfacing to a human rather than retrying
+# indefinitely.
+MAX_HALLUCINATION_RETRIES = 1
 
 
 @dataclass
@@ -142,21 +155,69 @@ def generate_ai_explanation_for_finding(
         # docstring: before/after must bracket the explain() call.
         finding_before_ai = copy.deepcopy(finding)
 
-        ai_output = explain(
-            ai_input,
-            primary=primary,
-            fallback=fallback,
-        )
-
         # Task A's own safeguard on its own output -- runs BEFORE
         # Task B's validation, since a fabricated fact in the free
         # text is a different failure mode than a bad citation, and
         # catching it here is more specific than letting it flow
         # through to a human reviewer.
-        check_for_hallucinations_or_raise(
-            ai_output=ai_output,
-            ai_input=ai_input,
-        )
+        #
+        # Retried up to MAX_HALLUCINATION_RETRIES times: a rejection
+        # here is often the model conflating two closed-vocabulary
+        # words that sound alike (e.g. severity "HIGH" vs a status
+        # "HIGH_RISK") rather than a broken provider/prompt, so one
+        # retry with a reminder naming the exact rejected claim(s)
+        # (see prompts.build_user_prompt's "_retry_reminder" field)
+        # resolves it without surfacing a failure to the reviewer.
+        # ai_input is only mutated with an extra "_retry_reminder" key
+        # here, AFTER build_ai_input()'s own schema validation already
+        # ran above -- never re-validated, so the extra key is safe.
+        hallucination_errors: list[str] = []
+
+        for attempt in range(MAX_HALLUCINATION_RETRIES + 1):
+
+            ai_output = explain(
+                ai_input,
+                primary=primary,
+                fallback=fallback,
+            )
+
+            hallucination_errors = check_for_hallucinations(
+                ai_output=ai_output,
+                ai_input=ai_input,
+            )
+
+            if not hallucination_errors:
+                break
+
+            if attempt < MAX_HALLUCINATION_RETRIES:
+
+                logger.warning(
+                    "Hallucination tripwire flagged finding %s on "
+                    "attempt %d/%d, retrying with a corrective "
+                    "reminder: %s",
+                    finding_id,
+                    attempt + 1,
+                    MAX_HALLUCINATION_RETRIES + 1,
+                    hallucination_errors,
+                )
+
+                ai_input = {
+                    **ai_input,
+                    "_retry_reminder": (
+                        "Your previous answer for this finding was "
+                        "rejected because it contradicted or invented "
+                        "facts not present in the evidence below. "
+                        "Specifically:\n- "
+                        + "\n- ".join(hallucination_errors)
+                    ),
+                }
+
+        if hallucination_errors:
+            raise HallucinationDetectedError(
+                "Hallucination tripwire flagged this explanation "
+                f"after {MAX_HALLUCINATION_RETRIES + 1} attempt(s):\n- "
+                + "\n- ".join(hallucination_errors)
+            )
 
         validate_ai_output_or_raise(
             ai_output=ai_output,
