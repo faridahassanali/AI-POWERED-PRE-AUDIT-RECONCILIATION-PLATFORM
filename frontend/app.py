@@ -19,59 +19,69 @@ Frontend phase deliverables:
 
 Data source
 -----------
-Findings and evaluation metrics are loaded from the real
-engine.audit_pipeline.run_audit() result, run through
-engine.audit_orchestration.run_audit_and_persist() so the audit run,
-findings, and evaluation metrics are written to Supabase whenever
-it's configured.
+Findings are loaded through the FastAPI backend (backend/main.py):
 
-No mock findings are used.
+    frontend.api_client.run_audit()      -> POST /audit-runs/execute
+    frontend.api_client.get_findings()   -> GET  /findings
+
+The backend runs the deterministic audit pipeline and persists the
+audit run + findings to Supabase itself. No mock findings are used.
+
+Evaluation metrics (TP/FP/FN, Precision/Recall/F1) are NOT yet
+exposed by the backend, so the dashboard currently shows them as
+zero/placeholder until a /audit-runs/{id}/evaluation-style endpoint
+is added. Everything else on the dashboard (severity/status
+breakdowns, run summary) is computed from the real findings and is
+unaffected.
 
 Persistence
 -----------
-Every action that changes state is written to Supabase best-effort:
-if SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY aren't set, the write is
-skipped silently and the UI keeps working exactly as before —
-persistence is never a hard requirement for using the app.
+Confirm / Reject decisions go through PATCH /findings/{id}, which
+the backend persists to Supabase (findings + finding_reviews) itself
+-- there is no more best-effort local write for these two actions.
 
-    - A fresh audit run           -> policies, policy_versions,
-                                      audit_runs, findings, audit_evaluations
-    - A Confirm/Reject decision   -> updated findings, finding_reviews,
-                                      and (for
-                                      Confirm only) an immediate
-                                      deterministic Stage 2
-                                      explanation -> finding_explanations
-    - A generated AI explanation  -> updated findings, ai_outputs
-
-Backend/API integration can replace load_pipeline_result() later
-without changing the UI structure.
+AI explanation generation (Stage 3) is NOT yet exposed by the
+backend, so it still calls engine.ai_explanation_pipeline directly,
+same as before. This is a deliberate, temporary hybrid: everything
+the backend already supports goes through the API; everything it
+doesn't yet support keeps working exactly as it did.
 """
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+# Streamlit only adds this file's own directory (frontend/) to
+# sys.path, not the project root -- so `engine` and `frontend` (as
+# packages) aren't importable by default no matter how this is
+# launched. Insert the project root explicitly, before anything else
+# tries to import from engine.* or frontend.*.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 import streamlit as st
 
 from engine.ai_explanation_pipeline import generate_ai_explanation_for_finding
-from engine.audit_orchestration import run_audit_and_persist
 from engine.data_loader import DATA_DIR
 from engine.finding_explainer import explain_finding
-from engine.finding_review import (
-    confirm_finding,
-    reject_finding,
-)
 from engine.persistence import (
     PersistenceNotConfigured,
-    get_supabase_client,
     write_ai_output,
     write_finding_explanation,
-    write_finding_review,
     write_findings,
 )
-from engine.policy_persistence import load_policy_registry_from_supabase, sync_policy_registry
 from engine.policy_registry import load_policy_registry
+
+from frontend.api_client import (
+    BackendError,
+    REVIEW_MERGE_FIELDS,
+    get_findings,
+    run_audit,
+    update_finding,
+)
 
 
 # =========================================================
@@ -221,20 +231,41 @@ def render_color_legend(items: list[tuple[str, str, str]]) -> None:
 @st.cache_resource(show_spinner="Running audit pipeline...")
 def load_pipeline_result():
     """
-    Run the real deterministic audit pipeline once per session,
-    routed through run_audit_and_persist() so the audit run,
-    findings, and evaluation metrics are written to Supabase
-    whenever it's configured (best-effort -- the pipeline result is
-    identical either way).
+    Run the audit pipeline via the backend and fetch the resulting
+    findings, once per session.
 
-    The same result object supplies:
-        - generated findings
-        - evaluation metrics
-        - audit trace
-        - report
+    Flow:
+        frontend.api_client.run_audit()     -> POST /audit-runs/execute
+        frontend.api_client.get_findings()  -> GET  /findings
+
+    Returns a SimpleNamespace shaped like the old in-process pipeline
+    result (`.generated_findings`, `.evaluation`) so the rest of this
+    file -- render_dashboard(), main(), etc. -- doesn't need to change.
+
+    `.evaluation` is None for now: the backend doesn't expose
+    evaluation metrics yet. _evaluation_value() below already
+    defaults missing fields to 0 / 0.0, so the dashboard renders
+    fine with placeholders until that endpoint exists.
     """
-    orchestrated = run_audit_and_persist()
-    return orchestrated.pipeline_result
+
+    try:
+        run_audit()
+        findings = get_findings()
+    except BackendError as exc:
+        st.error(f"Backend error while loading findings: {exc}")
+        findings = []
+    except Exception as exc:  # network errors, timeouts, etc.
+        st.error(
+            "Couldn't reach the backend. Make sure uvicorn is running "
+            f"on {os.environ.get('APP_API_BASE', 'http://127.0.0.1:8000')} "
+            f"with the same APP_API_KEYS set. ({exc})"
+        )
+        findings = []
+
+    return SimpleNamespace(
+        generated_findings=findings,
+        evaluation=None,
+    )
 
 
 @st.cache_resource(show_spinner="Loading policy registry...")
@@ -242,9 +273,8 @@ def load_registry():
     """
     Load the Policy Registry once per session.
 
-    The local Markdown policies are the authoritative policy source
-    for RAG retrieval. Supabase persistence is handled separately by
-    the audit orchestration layer.
+    Still loaded locally for the AI explanation step (Stage 3), which
+    has not yet been moved behind the backend.
     """
     return load_policy_registry(DATA_DIR)
 
@@ -1006,19 +1036,18 @@ def render_finding_detail(
                     key=f"confirm_{finding['finding_id']}",
                 ):
 
-                    previous_status = current_status
-
                     try:
 
-                        confirm_finding(
-                            finding,
+                        updated = update_finding(
+                            finding["finding_id"],
+                            finding_status="CONFIRMED",
                             reviewed_by=reviewer_name,
                             reviewer_notes=(
                                 reviewer_notes or None
                             ),
                         )
 
-                    except ValueError as exc:
+                    except BackendError as exc:
 
                         st.error(
                             f"Could not confirm: {exc}"
@@ -1026,17 +1055,18 @@ def render_finding_detail(
 
                     else:
 
-                        try:
-                            write_findings([finding])
-                            write_finding_review(
-                                finding,
-                                previous_status=previous_status,
-                            )
-                        except PersistenceNotConfigured:
-                            # Supabase is optional -- the review
-                            # decision still stands in memory even
-                            # if it can't be persisted.
-                            pass
+                        # Keep the cached findings list in sync with
+                        # what the backend actually persisted -- only
+                        # merge the review-related fields, not the raw
+                        # Supabase row (which carries created_at/
+                        # updated_at that break the AI input schema).
+                        finding.update(
+                            {
+                                key: value
+                                for key, value in updated.items()
+                                if key in REVIEW_MERGE_FIELDS
+                            }
+                        )
 
                         # Immediately generate and persist the
                         # deterministic Stage 2 explanation -- no
@@ -1044,7 +1074,9 @@ def render_finding_detail(
                         # the moment a finding is confirmed. This is
                         # separate from the AI explanation (Stage 3,
                         # generated on-demand below via the
-                        # "Generate AI explanation" button).
+                        # "Generate AI explanation" button) and is
+                        # still handled locally since the backend
+                        # doesn't expose it yet.
                         try:
                             deterministic_explanation = explain_finding(
                                 finding
@@ -1060,8 +1092,8 @@ def render_finding_detail(
                         except ValueError:
                             # explain_finding() only raises if the
                             # finding isn't CONFIRMED -- unreachable
-                            # here since confirm_finding() just set
-                            # it, but guarded rather than assumed.
+                            # here since the backend just set it,
+                            # but guarded rather than assumed.
                             pass
 
                         st.success(
@@ -1079,19 +1111,18 @@ def render_finding_detail(
                     key=f"reject_{finding['finding_id']}",
                 ):
 
-                    previous_status = current_status
-
                     try:
 
-                        reject_finding(
-                            finding,
+                        updated = update_finding(
+                            finding["finding_id"],
+                            finding_status="REJECTED",
                             reviewed_by=reviewer_name,
                             reviewer_notes=(
                                 reviewer_notes or None
                             ),
                         )
 
-                    except ValueError as exc:
+                    except BackendError as exc:
 
                         st.error(
                             f"Could not reject: {exc}"
@@ -1099,14 +1130,13 @@ def render_finding_detail(
 
                     else:
 
-                        try:
-                            write_findings([finding])
-                            write_finding_review(
-                                finding,
-                                previous_status=previous_status,
-                            )
-                        except PersistenceNotConfigured:
-                            pass
+                        finding.update(
+                            {
+                                key: value
+                                for key, value in updated.items()
+                                if key in REVIEW_MERGE_FIELDS
+                            }
+                        )
 
                         st.success(
                             "Finding rejected."
@@ -1159,6 +1189,10 @@ def render_finding_detail(
     # =====================================================
     # AI OUTPUT
     # =====================================================
+    # NOTE: still calls engine.ai_explanation_pipeline directly.
+    # The backend doesn't expose an AI-explanation endpoint yet --
+    # this stays as-is until that's added, per the plan to link the
+    # backend-supported features first.
 
     with tab_ai:
 
@@ -1264,8 +1298,9 @@ def _evaluation_value(
     """
     Read a field from either a dataclass/object or dict.
 
-    Makes the dashboard a little more robust to future
-    changes in EvaluationResult representation.
+    Also handles evaluation=None gracefully (current state, since
+    the backend doesn't expose evaluation metrics yet) by falling
+    through to `default`.
     """
 
     if hasattr(
@@ -1316,15 +1351,11 @@ def render_dashboard(
     """
     Render Person C dashboard.
 
-    Uses EvaluationResult directly for:
-        TP
-        FP
-        FN
-        Precision
-        Recall
-        F1
-
-    Severity distribution is based on the generated findings.
+    TP / FP / FN / Precision / Recall / F1 currently show as
+    placeholders (0 / 0.000) because evaluation is None until the
+    backend exposes an evaluation endpoint -- see load_pipeline_result().
+    Severity/status distribution and run summary are computed from
+    the real findings and are fully live.
     """
 
     render_page_header("Audit Dashboard", "📊")
@@ -1332,6 +1363,13 @@ def render_dashboard(
     st.caption(
         "Deterministic audit evaluation and finding summary"
     )
+
+    if evaluation is None:
+        st.caption(
+            "⚠️ Evaluation metrics (TP/FP/FN, Precision/Recall/F1) "
+            "aren't exposed by the backend yet — showing placeholders "
+            "below until that endpoint is added."
+        )
 
     # -----------------------------------------------------
     # TOP METRICS
@@ -1819,10 +1857,9 @@ def main() -> None:
     st.sidebar.divider()
 
     st.sidebar.caption(
-        "The UI uses the real deterministic audit pipeline. "
-        "Audit runs, findings, reviews, deterministic "
-        "explanations, and AI outputs are persisted to "
-        "Supabase automatically when it's configured."
+        "Findings and confirm/reject actions go through the "
+        "FastAPI backend. AI explanation generation is still "
+        "handled locally until the backend exposes it."
     )
 
     # -----------------------------------------------------
