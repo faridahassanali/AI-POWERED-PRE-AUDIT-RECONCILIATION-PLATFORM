@@ -1,5 +1,5 @@
 """
-Tests for app.py (Streamlit Findings List + Finding Detail view).
+Tests for frontend/app.py.
 
 Pure-function coverage:
     - get_finding_by_id
@@ -8,8 +8,9 @@ Pure-function coverage:
     - sort_findings
 
 Streamlit AppTest smoke coverage:
-    - Generate AI explanation button for a CONFIRMED finding
-      without existing AI output.
+    - Confirmed finding shows the Generate AI explanation button
+    - Clicking the button calls the frontend API client
+    - Returned AI explanation/recommendation are merged into the finding
 
 The Streamlit application lives at:
 
@@ -18,10 +19,9 @@ The Streamlit application lives at:
 The frontend communicates with the FastAPI backend through:
 
     frontend.api_client
-
-Therefore the AppTest smoke test patches frontend.api_client
-functions rather than the engine layer.
 """
+
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -169,22 +169,16 @@ def test_get_finding_by_id_empty_list():
 
 
 # =========================================================
-# filter_findings — control/severity/status filters
+# filter_findings
 # =========================================================
 
 
 def test_filter_findings_no_filters_returns_all(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df[
-            "control_id"
-        ].unique().tolist(),
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_controls=sample_df["control_id"].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
     )
 
     assert len(result) == 4
@@ -194,12 +188,8 @@ def test_filter_findings_by_single_control(sample_df):
     result = filter_findings(
         sample_df,
         selected_controls=["SCREENING_001"],
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
     )
 
     assert set(result["finding_id"]) == {
@@ -211,13 +201,9 @@ def test_filter_findings_by_single_control(sample_df):
 def test_filter_findings_by_severity(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df[
-            "control_id"
-        ].unique().tolist(),
+        selected_controls=sample_df["control_id"].unique().tolist(),
         selected_severities=["CRITICAL"],
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
     )
 
     assert result["finding_id"].tolist() == [
@@ -228,12 +214,8 @@ def test_filter_findings_by_severity(sample_df):
 def test_filter_findings_by_status(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df[
-            "control_id"
-        ].unique().tolist(),
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
+        selected_controls=sample_df["control_id"].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
         selected_statuses=["REJECTED"],
     )
 
@@ -242,9 +224,7 @@ def test_filter_findings_by_status(sample_df):
     ]
 
 
-def test_filter_findings_combined_filters_narrow_correctly(
-    sample_df,
-):
+def test_filter_findings_combined_filters_narrow_correctly(sample_df):
     result = filter_findings(
         sample_df,
         selected_controls=["SCREENING_001"],
@@ -257,18 +237,12 @@ def test_filter_findings_combined_filters_narrow_correctly(
     ]
 
 
-def test_filter_findings_empty_selection_returns_empty(
-    sample_df,
-):
+def test_filter_findings_empty_selection_returns_empty(sample_df):
     result = filter_findings(
         sample_df,
         selected_controls=[],
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
     )
 
     assert result.empty
@@ -279,20 +253,12 @@ def test_filter_findings_empty_selection_returns_empty(
 # =========================================================
 
 
-def test_filter_findings_search_by_finding_id_case_insensitive(
-    sample_df,
-):
+def test_filter_findings_search_by_finding_id_case_insensitive(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df[
-            "control_id"
-        ].unique().tolist(),
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_controls=sample_df["control_id"].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
         search="f-aaaa0001",
     )
 
@@ -301,20 +267,12 @@ def test_filter_findings_search_by_finding_id_case_insensitive(
     ]
 
 
-def test_filter_findings_search_by_customer_id(
-    sample_df,
-):
+def test_filter_findings_search_by_customer_id(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df[
-            "control_id"
-        ].unique().tolist(),
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_controls=sample_df["control_id"].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
         search="100016",
     )
 
@@ -326,22 +284,11 @@ def test_filter_findings_search_by_customer_id(
 def test_filter_findings_search_with_null_customer_id_does_not_crash(
     sample_df,
 ):
-    """
-    F-DDDD0004 has customer_id=None.
-    Searching must not raise on pandas .str operations.
-    """
-
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df[
-            "control_id"
-        ].unique().tolist(),
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_controls=sample_df["control_id"].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
         search="dddd",
     )
 
@@ -350,20 +297,12 @@ def test_filter_findings_search_with_null_customer_id_does_not_crash(
     ]
 
 
-def test_filter_findings_search_no_match_returns_empty(
-    sample_df,
-):
+def test_filter_findings_search_no_match_returns_empty(sample_df):
     result = filter_findings(
         sample_df,
-        selected_controls=sample_df[
-            "control_id"
-        ].unique().tolist(),
-        selected_severities=sample_df[
-            "severity"
-        ].unique().tolist(),
-        selected_statuses=sample_df[
-            "finding_status"
-        ].unique().tolist(),
+        selected_controls=sample_df["control_id"].unique().tolist(),
+        selected_severities=sample_df["severity"].unique().tolist(),
+        selected_statuses=sample_df["finding_status"].unique().tolist(),
         search="does-not-exist",
     )
 
@@ -439,10 +378,6 @@ def test_get_nav_state_single_item_has_no_prev_or_next():
 
 
 def test_get_nav_state_id_not_in_list_returns_none():
-    """
-    Simulates a stale selected_finding_id after filters change.
-    """
-
     assert (
         get_nav_state(
             ["F-1", "F-2"],
@@ -457,9 +392,7 @@ def test_get_nav_state_id_not_in_list_returns_none():
 # =========================================================
 
 
-def test_sort_findings_by_severity_critical_first(
-    sample_df,
-):
+def test_sort_findings_by_severity_critical_first(sample_df):
     result = sort_findings(
         sample_df,
         "Severity (Critical first)",
@@ -495,17 +428,7 @@ def test_sort_findings_by_control(sample_df):
     )
 
 
-def test_sort_findings_by_customer_puts_null_last(
-    sample_df,
-):
-    """
-    F-DDDD0004 has customer_id=None.
-
-    Sorting must:
-        1. not crash
-        2. put the null customer last
-    """
-
+def test_sort_findings_by_customer_puts_null_last(sample_df):
     result = sort_findings(
         sample_df,
         "Customer",
@@ -516,9 +439,7 @@ def test_sort_findings_by_customer_puts_null_last(
     )
 
 
-def test_sort_findings_unrecognized_key_returns_unchanged(
-    sample_df,
-):
+def test_sort_findings_unrecognized_key_returns_unchanged(sample_df):
     result = sort_findings(
         sample_df,
         "Not A Real Option",
@@ -530,8 +451,7 @@ def test_sort_findings_unrecognized_key_returns_unchanged(
 
 
 # =========================================================
-# GENERATE AI EXPLANATION BUTTON
-# Streamlit AppTest smoke test
+# STREAMLIT APPTEST
 # =========================================================
 
 
@@ -539,34 +459,15 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(
     monkeypatch,
 ):
     """
-    Verify that:
+    Verify that a CONFIRMED finding without AI output:
 
-    1. A CONFIRMED finding without an AI explanation displays
-       the "Generate AI explanation" button.
-
-    2. Clicking the button calls the frontend API client.
-
-    3. The returned explanation and recommendation are merged
-       into the finding.
-
-    Current architecture:
-
-        Streamlit app
-            |
-            v
-        frontend.api_client
-            |
-            v
-        FastAPI backend
-            |
-            v
-        engine / Supabase
-
-    Therefore the test patches frontend.api_client rather than
-    the engine layer.
+    1. Opens correctly in the detail view.
+    2. Displays the Generate AI explanation button.
+    3. Calls frontend.api_client.generate_ai_explanation().
+    4. Merges the returned AI fields into the finding.
     """
 
-    import frontend.api_client as api_client_module
+    import frontend.app as app_module
 
     # ---------------------------------------------------------
     # Confirmed finding without AI output
@@ -598,55 +499,53 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(
             }
         ],
         "reviewed_by": "tester",
-        "review_timestamp": (
-            "2026-08-23T00:00:00Z"
-        ),
+        "review_timestamp": "2026-08-23T00:00:00Z",
         "reviewer_notes": None,
         "ai_explanation": None,
         "ai_recommendation": None,
     }
 
     # ---------------------------------------------------------
-    # Fake backend: run audit
+    # Patch app-level imported functions
+    # ---------------------------------------------------------
+    #
+    # frontend/app.py imports these functions directly:
+    #
+    # from frontend.api_client import (
+    #     generate_ai_explanation,
+    #     get_evaluation,
+    #     get_findings,
+    #     run_audit,
+    # )
+    #
+    # Therefore patching frontend.api_client alone is not enough
+    # for functions that were already imported into app.py.
+    # We patch the names actually used by app.py.
     # ---------------------------------------------------------
 
     monkeypatch.setattr(
-        api_client_module,
+        app_module,
         "run_audit",
-        lambda: {
+        lambda idempotency_key=None: {
             "audit_run_id": "RUN-BTN",
         },
     )
 
-    # ---------------------------------------------------------
-    # Fake backend: get findings
-    # ---------------------------------------------------------
-
     monkeypatch.setattr(
-        api_client_module,
+        app_module,
         "get_findings",
         lambda audit_run_id=None: [
             confirmed_finding
         ],
     )
 
-    # ---------------------------------------------------------
-    # Fake backend: get evaluation
-    # ---------------------------------------------------------
-
     monkeypatch.setattr(
-        api_client_module,
+        app_module,
         "get_evaluation",
-        lambda audit_run_id: None,
+        lambda audit_run_id=None: None,
     )
 
-    # ---------------------------------------------------------
-    # Fake backend: generate AI explanation
-    # ---------------------------------------------------------
-
-    def fake_generate_ai_explanation(
-        finding_id,
-    ):
+    def fake_generate_ai_explanation(finding_id):
         assert finding_id == "F-BTN-0001"
 
         return {
@@ -660,58 +559,79 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(
         }
 
     monkeypatch.setattr(
-        api_client_module,
+        app_module,
         "generate_ai_explanation",
         fake_generate_ai_explanation,
     )
 
     # ---------------------------------------------------------
-    # Start Streamlit AppTest
+    # Clear cached pipeline result
     # ---------------------------------------------------------
     #
-    # IMPORTANT:
-    #
-    # The actual Streamlit app is located at:
-    #
-    #     frontend/app.py
-    #
-    # Since this test file is:
-    #
-    #     tests/test_app.py
-    #
-    # the correct relative path is:
-    #
-    #     ../frontend/app.py
-    #
-    # NOT:
-    #
-    #     ../app.py
-    #
+    # load_pipeline_result() is cached with @st.cache_resource.
+    # Clearing it prevents a previous test/app execution from
+    # returning stale backend data.
     # ---------------------------------------------------------
 
-    at = AppTest.from_file(
-        "../frontend/app.py"
+    app_module.load_pipeline_result.clear()
+
+    # ---------------------------------------------------------
+    # Resolve frontend/app.py from this test file
+    # ---------------------------------------------------------
+
+    app_path = (
+        Path(__file__).resolve().parents[1]
+        / "frontend"
+        / "app.py"
+    )
+
+    assert app_path.exists(), (
+        f"Could not find Streamlit app at: {app_path}"
     )
 
     # ---------------------------------------------------------
-    # Open the finding detail view
+    # Start Streamlit AppTest
+    # ---------------------------------------------------------
+
+    at = AppTest.from_file(
+        str(app_path)
+    )
+
+    # ---------------------------------------------------------
+    # Set initial session state
     # ---------------------------------------------------------
 
     at.session_state["view"] = "detail"
     at.session_state["selected_finding_id"] = (
         "F-BTN-0001"
     )
+    at.session_state["filtered_ids"] = [
+        "F-BTN-0001"
+    ]
+
+    # ---------------------------------------------------------
+    # Run app
+    # ---------------------------------------------------------
 
     at.run()
 
     # ---------------------------------------------------------
-    # The app itself must not crash
+    # App must not crash
     # ---------------------------------------------------------
 
     assert not at.exception
 
     # ---------------------------------------------------------
-    # Verify Generate AI explanation button appears
+    # Verify finding detail is displayed
+    # ---------------------------------------------------------
+
+    assert any(
+        "F-BTN-0001" in title.value
+        for title in at.title
+    )
+
+    # ---------------------------------------------------------
+    # Verify Generate AI explanation button
     # ---------------------------------------------------------
 
     generate_buttons = [
@@ -723,7 +643,7 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(
     assert len(generate_buttons) == 1
 
     # ---------------------------------------------------------
-    # Click the button
+    # Click Generate AI explanation
     # ---------------------------------------------------------
 
     generate_buttons[0].click().run()
@@ -735,8 +655,7 @@ def test_generate_button_appears_for_confirmed_finding_without_explanation(
     assert not at.exception
 
     # ---------------------------------------------------------
-    # Verify returned AI output was merged
-    # into the finding
+    # Verify AI output was merged into finding
     # ---------------------------------------------------------
 
     assert (

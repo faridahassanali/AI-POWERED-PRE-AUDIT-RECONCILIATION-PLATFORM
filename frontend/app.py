@@ -29,42 +29,41 @@ audit run + findings to Supabase itself. No mock findings are used.
 
 Evaluation metrics (TP/FP/FN, Precision/Recall/F1) are fetched via
 frontend.api_client.get_evaluation() -> GET /audit-runs/{id}/evaluation.
-If no evaluation has been persisted yet for the current audit run,
-that call returns None and the dashboard falls back to showing
-zero/placeholder values -- see _evaluation_value() below.
 
 Persistence
 -----------
 Confirm / Reject decisions go through PATCH /findings/{id}, which the
-backend persists to Supabase (findings + finding_reviews) itself.
-Confirming a finding also makes the backend generate and persist the
-deterministic Stage 2 explanation automatically -- the frontend no
-longer calls engine.finding_explainer directly.
+backend persists to Supabase.
 
-AI explanation generation (Stage 3) now goes through
-POST /findings/{id}/ai-explanation instead of calling
-engine.ai_explanation_pipeline directly from inside the Streamlit
-process. This means the frontend no longer needs
-SUPABASE_SERVICE_ROLE_KEY / GROQ_API_KEY / GEMINI_API_KEY -- only
-APP_API_BASE and APP_API_KEYS, same as everything else.
+AI explanation generation (Stage 3) goes through
+POST /findings/{id}/ai-explanation.
 """
 
 from __future__ import annotations
-import uuid
+
 import os
 import sys
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-# Streamlit only adds this file's own directory (frontend/) to
-# sys.path, not the project root -- so `engine` and `frontend` (as
-# packages) aren't importable by default no matter how this is
-# launched. Insert the project root explicitly, before anything else
-# tries to import from engine.* or frontend.*.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import pandas as pd
 import streamlit as st
+
+
+# =========================================================
+# PROJECT ROOT
+# =========================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# =========================================================
+# API CLIENT
+# =========================================================
 
 from frontend.api_client import (
     BackendError,
@@ -74,31 +73,88 @@ from frontend.api_client import (
     run_audit,
     update_finding,
 )
+
+
+# =========================================================
+# TESTABLE API FUNCTION RESOLUTION
+# =========================================================
+
+def _get_api_function(name: str):
+    """
+    Return the API function used by the frontend.
+
+    Normally this returns the function imported from
+    frontend.api_client.
+
+    During pytest Streamlit AppTest execution, the test may import
+    frontend.app first and monkeypatch functions on that module.
+    AppTest then executes app.py in a separate module namespace.
+
+    In that situation, prefer the already-imported frontend.app
+    function so the test's monkeypatch is respected.
+    """
+
+    current_module = sys.modules.get(__name__)
+
+    imported_app = sys.modules.get(
+        "frontend.app"
+    )
+
+    if (
+        imported_app is not None
+        and imported_app is not current_module
+    ):
+
+        patched_function = getattr(
+            imported_app,
+            name,
+            None,
+        )
+
+        if callable(patched_function):
+
+            return patched_function
+
+    return globals()[name]
+
+
+# =========================================================
+# REVIEW MERGE FIELDS
+# =========================================================
+
 REVIEW_MERGE_FIELDS = {
     "finding_status",
     "reviewed_by",
     "reviewer_notes",
+    "review_timestamp",
     "ai_explanation",
     "ai_recommendation",
 }
+
+
 # =========================================================
 # BRANDING / LOGO
 # =========================================================
-# Put the bank logo file at assets/logo.png (next to this app.py) and it
-# will replace the emoji icons automatically. If the file isn't there
-# yet, the UI falls back to the emoji so the app never breaks.
 
 APP_DIR = Path(__file__).parent
-LOGO_PATH = APP_DIR / "assets" / "logo.png"
+
+LOGO_PATH = (
+    APP_DIR
+    / "assets"
+    / "logo.png"
+)
+
 _LOGO_AVAILABLE = LOGO_PATH.exists()
 
 
-def render_page_header(title: str, fallback_icon: str) -> None:
+def render_page_header(
+    title: str,
+    fallback_icon: str,
+) -> None:
     """
     Render a page title with the bank logo beside it.
 
-    Falls back to `fallback_icon + title` (the old emoji-based
-    style) if assets/logo.png hasn't been added to the repo yet.
+    Falls back to the emoji if assets/logo.png does not exist.
     """
 
     if _LOGO_AVAILABLE:
@@ -109,12 +165,14 @@ def render_page_header(title: str, fallback_icon: str) -> None:
         )
 
         with logo_col:
+
             st.image(
                 str(LOGO_PATH),
                 width=120,
             )
 
         with title_col:
+
             st.title(title)
 
     else:
@@ -142,19 +200,12 @@ st.set_page_config(
 # =========================================================
 # THEME / PALETTE
 # =========================================================
-# Colors pulled from the app logo (gold top / orange-red bottom / near-black
-# line). Kept muted/desaturated on purpose so the UI stays clean instead of
-# looking "poppy". These are UI-only constants — no business logic here.
 
-BRAND_CRITICAL = "#A8321A"   # deep brick red — most intense, most urgent
-BRAND_HIGH = "#D9531E"       # primary orange-red (from the logo bottom)
-BRAND_MEDIUM = "#E8A33D"     # muted gold (from the logo top)
-BRAND_LOW = "#F0C978"        # light gold/cream — least intense, least urgent
+BRAND_CRITICAL = "#A8321A"
+BRAND_HIGH = "#D9531E"
+BRAND_MEDIUM = "#E8A33D"
+BRAND_LOW = "#F0C978"
 
-# A single readable gradient: darkest/most saturated = most urgent,
-# lightest = least urgent. Same brand family end-to-end, so every bar
-# still visually "belongs" together instead of looking like unrelated
-# random colors.
 SEVERITY_CHART_COLORS = {
     "CRITICAL": BRAND_CRITICAL,
     "HIGH": BRAND_HIGH,
@@ -163,42 +214,66 @@ SEVERITY_CHART_COLORS = {
 }
 
 SEVERITY_LEGEND = [
-    ("CRITICAL", BRAND_CRITICAL, "Needs immediate attention"),
-    ("HIGH", BRAND_HIGH, "High priority — review soon"),
-    ("MEDIUM", BRAND_MEDIUM, "Moderate priority"),
-    ("LOW", BRAND_LOW, "Low priority / minor"),
+    (
+        "CRITICAL",
+        BRAND_CRITICAL,
+        "Needs immediate attention",
+    ),
+    (
+        "HIGH",
+        BRAND_HIGH,
+        "High priority — review soon",
+    ),
+    (
+        "MEDIUM",
+        BRAND_MEDIUM,
+        "Moderate priority",
+    ),
+    (
+        "LOW",
+        BRAND_LOW,
+        "Low priority / minor",
+    ),
 ]
 
-# Same intensity logic applied to review status: darker = further along
-# a "needs action" scale, lighter = settled/no action needed. Any status
-# not listed here falls back to the neutral color below.
 STATUS_CHART_COLORS = {
     "REVIEW": BRAND_MEDIUM,
     "CONFIRMED": BRAND_HIGH,
     "REJECTED": BRAND_CRITICAL,
 }
 
-STATUS_CHART_FALLBACK_COLOR = "#B8AFA0"  # neutral warm gray for any other status
+STATUS_CHART_FALLBACK_COLOR = "#B8AFA0"
 
 STATUS_LEGEND = [
-    ("REVIEW", BRAND_MEDIUM, "Awaiting a reviewer decision"),
-    ("CONFIRMED", BRAND_HIGH, "Confirmed by a human reviewer"),
-    ("REJECTED", BRAND_CRITICAL, "Rejected by a human reviewer"),
+    (
+        "REVIEW",
+        BRAND_MEDIUM,
+        "Awaiting a reviewer decision",
+    ),
+    (
+        "CONFIRMED",
+        BRAND_HIGH,
+        "Confirmed by a human reviewer",
+    ),
+    (
+        "REJECTED",
+        BRAND_CRITICAL,
+        "Rejected by a human reviewer",
+    ),
 ]
 
 
-def render_color_legend(items: list[tuple[str, str, str]]) -> None:
+def render_color_legend(
+    items: list[tuple[str, str, str]],
+) -> None:
     """
-    Render a small "what does this color mean" legend under a chart.
-
-    items: list of (label, hex_color, description) tuples.
-    Pure display helper — does not touch any pipeline data.
+    Render a small legend under a chart.
     """
 
     swatches = "".join(
         f"""
         <div style="display:flex;align-items:center;gap:6px;
-                     margin:2px 14px 2px 0;">
+                    margin:2px 14px 2px 0;">
             <span style="display:inline-block;width:12px;height:12px;
                          border-radius:3px;background:{color};
                          flex-shrink:0;"></span>
@@ -213,7 +288,7 @@ def render_color_legend(items: list[tuple[str, str, str]]) -> None:
     st.markdown(
         f"""
         <div style="display:flex;flex-wrap:wrap;
-                     padding:8px 2px 4px 2px;">
+                    padding:8px 2px 4px 2px;">
             {swatches}
         </div>
         """,
@@ -224,45 +299,129 @@ def render_color_legend(items: list[tuple[str, str, str]]) -> None:
 # =========================================================
 # DATA ACCESS
 # =========================================================
+
 def _get_page_load_idempotency_key() -> str:
-    """One stable key per browser session, reused across reruns so
-    load_pipeline_result() never calls run_audit() with a missing or
-    changing key."""
-    if "page_load_idempotency_key" not in st.session_state:
-        st.session_state.page_load_idempotency_key = f"page-load-{uuid.uuid4().hex}"
+    """
+    Return one stable idempotency key per browser session.
+
+    The key is reused across Streamlit reruns.
+    """
+
+    if (
+        "page_load_idempotency_key"
+        not in st.session_state
+    ):
+
+        st.session_state.page_load_idempotency_key = (
+            f"page-load-{uuid.uuid4().hex}"
+        )
+
     return st.session_state.page_load_idempotency_key
 
 
-@st.cache_resource(show_spinner="Running audit pipeline...")
-def load_pipeline_result(idempotency_key: str):
+@st.cache_resource(
+    show_spinner="Running audit pipeline..."
+)
+def load_pipeline_result(
+    idempotency_key: str,
+):
+    """
+    Execute/load the audit run and retrieve its findings/evaluation.
+
+    The idempotency key is part of the cache key so the same browser
+    session does not accidentally execute the audit repeatedly.
+    """
+
     audit_run_id = ""
+
     findings: list[dict] = []
+
     evaluation = None
 
     try:
-        run_result = run_audit(idempotency_key=idempotency_key)
 
-        if run_result.get("status") == "duplicate":
-            audit_run_id = run_result.get("audit_run", {}).get("audit_run_id", "")
+        run_result = _get_api_function(
+            "run_audit"
+        )(
+            idempotency_key=idempotency_key
+        )
+
+        if not isinstance(
+            run_result,
+            dict,
+        ):
+
+            run_result = {}
+
+        if (
+            run_result.get("status")
+            == "duplicate"
+        ):
+
+            audit_run = (
+                run_result.get(
+                    "audit_run",
+                    {},
+                )
+                or {}
+            )
+
+            audit_run_id = audit_run.get(
+                "audit_run_id",
+                "",
+            )
+
         else:
-            audit_run_id = run_result.get("audit_run_id", "")
 
-        findings = get_findings(audit_run_id=audit_run_id)
+            audit_run_id = run_result.get(
+                "audit_run_id",
+                "",
+            )
+
+        if audit_run_id:
+
+            findings = _get_api_function(
+                "get_findings"
+            )(
+                audit_run_id=audit_run_id
+            )
+
+        else:
+
+            findings = []
+
     except BackendError as exc:
-        st.error(f"Backend error while loading findings: {exc}")
-    except Exception as exc:
+
         st.error(
-            "Couldn't reach the backend. Make sure uvicorn is running "
+            f"Backend error while loading findings: {exc}"
+        )
+
+    except Exception as exc:
+
+        st.error(
+            "Couldn't reach the backend. "
+            "Make sure uvicorn is running "
             f"on {os.environ.get('APP_API_BASE', 'http://127.0.0.1:8000')} "
-            f"with the same APP_API_KEYS set. ({exc})"
+            "with the same APP_API_KEYS set. "
+            f"({exc})"
         )
 
     if audit_run_id:
+
         try:
-            evaluation = get_evaluation(audit_run_id)
+
+            evaluation = _get_api_function(
+                "get_evaluation"
+            )(
+                audit_run_id
+            )
+
         except BackendError:
+
             evaluation = None
+
         except Exception:
+
             evaluation = None
 
     return SimpleNamespace(
@@ -271,14 +430,24 @@ def load_pipeline_result(idempotency_key: str):
     )
 
 
+# =========================================================
+# FINDING HELPERS
+# =========================================================
+
 def get_finding_by_id(
     findings: list[dict],
     finding_id: str,
 ) -> dict | None:
-    """Return one finding by finding_id."""
+    """
+    Return one finding by finding_id.
+    """
 
     for finding in findings:
-        if finding["finding_id"] == finding_id:
+
+        if finding.get(
+            "finding_id"
+        ) == finding_id:
+
             return finding
 
     return None
@@ -315,17 +484,23 @@ def filter_findings(
     search: str = "",
 ) -> pd.DataFrame:
     """
-    Apply control / severity / status filters and optional
-    search across finding_id and customer_id.
+    Apply control / severity / status filters and optional search.
     """
 
     filtered = df[
-        df["control_id"].isin(selected_controls)
-        & df["severity"].isin(selected_severities)
-        & df["finding_status"].isin(selected_statuses)
+        df["control_id"].isin(
+            selected_controls
+        )
+        & df["severity"].isin(
+            selected_severities
+        )
+        & df["finding_status"].isin(
+            selected_statuses
+        )
     ].copy()
 
     if search:
+
         needle = search.strip().lower()
 
         finding_id_match = (
@@ -351,7 +526,8 @@ def filter_findings(
         )
 
         filtered = filtered[
-            finding_id_match | customer_id_match
+            finding_id_match
+            | customer_id_match
         ]
 
     return filtered
@@ -361,9 +537,12 @@ def sort_findings(
     df: pd.DataFrame,
     sort_by: str,
 ) -> pd.DataFrame:
-    """Sort findings according to the selected criterion."""
+    """
+    Sort findings according to selected criterion.
+    """
 
     if sort_by == "Severity (Critical first)":
+
         rank = df["severity"].map(
             lambda severity: SEVERITY_ORDER.get(
                 severity,
@@ -378,16 +557,19 @@ def sort_findings(
         )
 
     if sort_by == "Finding ID":
+
         return df.sort_values(
             "finding_id"
         )
 
     if sort_by == "Control":
+
         return df.sort_values(
             "control_id"
         )
 
     if sort_by == "Customer":
+
         return df.sort_values(
             "customer_id",
             na_position="last",
@@ -405,9 +587,12 @@ def get_nav_state(
     """
 
     if current_id not in ids:
+
         return None
 
-    position = ids.index(current_id)
+    position = ids.index(
+        current_id
+    )
 
     return {
         "position": position,
@@ -430,9 +615,13 @@ def get_nav_state(
 # =========================================================
 
 def render_reviewer_identity() -> str:
-    """Collect reviewer name once in the sidebar."""
+    """
+    Collect reviewer name once in the sidebar.
+    """
 
-    st.sidebar.header("Reviewer")
+    st.sidebar.header(
+        "Reviewer"
+    )
 
     return st.sidebar.text_input(
         "Reviewer name",
@@ -449,52 +638,68 @@ def render_sidebar(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Render filters/search/sorting and return filtered findings.
+    Render filters/search/sorting.
     """
 
-    st.sidebar.header("Filters")
+    st.sidebar.header(
+        "Filters"
+    )
 
     search = st.sidebar.text_input(
         "Search by Finding ID or Customer ID",
-        placeholder="e.g. F-547D4613 or CUST100016",
+        placeholder=(
+            "e.g. F-547D4613 or CUST100016"
+        ),
         key="filter_search",
     )
 
     control_options = sorted(
-        df["control_id"].dropna().unique()
+        df["control_id"]
+        .dropna()
+        .unique()
     )
 
-    selected_controls = st.sidebar.multiselect(
-        "Control",
-        control_options,
-        default=control_options,
-        key="filter_controls",
+    selected_controls = (
+        st.sidebar.multiselect(
+            "Control",
+            control_options,
+            default=control_options,
+            key="filter_controls",
+        )
     )
 
     severity_options = sorted(
-        df["severity"].dropna().unique(),
+        df["severity"]
+        .dropna()
+        .unique(),
         key=lambda severity: SEVERITY_ORDER.get(
             severity,
             99,
         ),
     )
 
-    selected_severities = st.sidebar.multiselect(
-        "Severity",
-        severity_options,
-        default=severity_options,
-        key="filter_severities",
+    selected_severities = (
+        st.sidebar.multiselect(
+            "Severity",
+            severity_options,
+            default=severity_options,
+            key="filter_severities",
+        )
     )
 
     status_options = sorted(
-        df["finding_status"].dropna().unique()
+        df["finding_status"]
+        .dropna()
+        .unique()
     )
 
-    selected_statuses = st.sidebar.multiselect(
-        "Status",
-        status_options,
-        default=status_options,
-        key="filter_statuses",
+    selected_statuses = (
+        st.sidebar.multiselect(
+            "Status",
+            status_options,
+            default=status_options,
+            key="filter_statuses",
+        )
     )
 
     sort_by = st.sidebar.selectbox(
@@ -508,7 +713,10 @@ def render_sidebar(
         key="sort_by",
     )
 
-    if st.sidebar.button("Reset filters"):
+    if st.sidebar.button(
+        "Reset filters"
+    ):
+
         for key in (
             "filter_search",
             "filter_controls",
@@ -516,12 +724,14 @@ def render_sidebar(
             "filter_statuses",
             "sort_by",
         ):
+
             st.session_state.pop(
                 key,
                 None,
             )
 
         st.session_state.filtered_ids = None
+
         st.rerun()
 
     filtered = filter_findings(
@@ -546,9 +756,13 @@ def render_findings_summary(
     df: pd.DataFrame,
     filtered: pd.DataFrame,
 ) -> None:
-    """Render compact metrics above the findings table."""
+    """
+    Render compact metrics above findings table.
+    """
 
-    counts = filtered["severity"].value_counts()
+    counts = filtered[
+        "severity"
+    ].value_counts()
 
     cols = st.columns(5)
 
@@ -559,22 +773,42 @@ def render_findings_summary(
 
     cols[1].metric(
         f"{SEVERITY_COLOR['CRITICAL']} Critical",
-        int(counts.get("CRITICAL", 0)),
+        int(
+            counts.get(
+                "CRITICAL",
+                0,
+            )
+        ),
     )
 
     cols[2].metric(
         f"{SEVERITY_COLOR['HIGH']} High",
-        int(counts.get("HIGH", 0)),
+        int(
+            counts.get(
+                "HIGH",
+                0,
+            )
+        ),
     )
 
     cols[3].metric(
         f"{SEVERITY_COLOR['MEDIUM']} Medium",
-        int(counts.get("MEDIUM", 0)),
+        int(
+            counts.get(
+                "MEDIUM",
+                0,
+            )
+        ),
     )
 
     cols[4].metric(
         f"{SEVERITY_COLOR['LOW']} Low",
-        int(counts.get("LOW", 0)),
+        int(
+            counts.get(
+                "LOW",
+                0,
+            )
+        ),
     )
 
 
@@ -585,14 +819,21 @@ def render_findings_summary(
 def render_findings_list(
     findings: list[dict],
 ) -> None:
-    """Render findings list with search, filters and sorting."""
+    """
+    Render findings list with search, filters and sorting.
+    """
 
-    render_page_header("Audit Findings", "🔎")
+    render_page_header(
+        "Audit Findings",
+        "🔎",
+    )
 
     if not findings:
+
         st.info(
             "No findings were generated by the audit run."
         )
+
         return
 
     df = pd.DataFrame(
@@ -611,23 +852,27 @@ def render_findings_list(
     st.divider()
 
     if filtered.empty:
+
         st.warning(
             "No findings match the current filters/search."
         )
+
         return
 
     st.session_state.filtered_ids = (
-        filtered["finding_id"].tolist()
+        filtered[
+            "finding_id"
+        ].tolist()
     )
 
     filtered = filtered.copy()
 
-    filtered["Severity"] = filtered[
-        "severity"
-    ].map(
-        lambda severity: (
-            f"{SEVERITY_COLOR.get(severity, '')} "
-            f"{severity}"
+    filtered["Severity"] = (
+        filtered["severity"].map(
+            lambda severity: (
+                f"{SEVERITY_COLOR.get(severity, '')} "
+                f"{severity}"
+            )
         )
     )
 
@@ -639,10 +884,13 @@ def render_findings_list(
         "finding_status": "Status",
     }
 
-    table = filtered[
-        list(display_cols.keys())
-    ].rename(
-        columns=display_cols
+    table = (
+        filtered[
+            list(display_cols.keys())
+        ]
+        .rename(
+            columns=display_cols
+        )
     )
 
     event = st.dataframe(
@@ -660,6 +908,7 @@ def render_findings_list(
     )
 
     if selected_rows:
+
         selected_finding_id = (
             filtered.iloc[
                 selected_rows[0]
@@ -670,7 +919,9 @@ def render_findings_list(
             selected_finding_id
         )
 
-        st.session_state.view = "detail"
+        st.session_state.view = (
+            "detail"
+        )
 
         st.rerun()
 
@@ -683,7 +934,9 @@ def render_navigation(
     findings: list[dict],
     finding_id: str,
 ) -> None:
-    """Render Back / Previous / Next navigation."""
+    """
+    Render Back / Previous / Next navigation.
+    """
 
     ids = (
         st.session_state.get(
@@ -700,42 +953,74 @@ def render_navigation(
         finding_id,
     )
 
-    nav_col1, nav_col2, nav_col3, nav_col4 = st.columns(
-        [2, 1, 1, 2]
+    nav_col1, nav_col2, nav_col3, nav_col4 = (
+        st.columns(
+            [2, 1, 1, 2]
+        )
     )
 
     with nav_col1:
+
         if st.button(
             "← Back to findings list"
         ):
-            st.session_state.view = "list"
-            st.session_state.selected_finding_id = None
+
+            st.session_state.view = (
+                "list"
+            )
+
+            st.session_state.selected_finding_id = (
+                None
+            )
+
             st.rerun()
 
     if nav_state is None:
+
         return
 
     with nav_col2:
+
         if st.button(
             "◀ Previous",
-            disabled=nav_state["prev_id"] is None,
+            disabled=(
+                nav_state["prev_id"]
+                is None
+            ),
         ):
+
             st.session_state.selected_finding_id = (
                 nav_state["prev_id"]
             )
+
+            st.session_state.view = (
+                "detail"
+            )
+
             st.rerun()
 
     with nav_col3:
+
         if st.button(
             "Next ▶",
-            disabled=nav_state["next_id"] is None,
+            disabled=(
+                nav_state["next_id"]
+                is None
+            ),
         ):
+
             st.session_state.selected_finding_id = (
                 nav_state["next_id"]
             )
+
+            st.session_state.view = (
+                "detail"
+            )
+
             st.rerun()
 
     with nav_col4:
+
         st.caption(
             f"Finding "
             f"{nav_state['position'] + 1} "
@@ -752,7 +1037,9 @@ def render_finding_detail(
     findings: list[dict],
     finding: dict,
 ) -> None:
-    """Render full finding detail."""
+    """
+    Render full finding detail.
+    """
 
     render_navigation(
         findings,
@@ -764,18 +1051,24 @@ def render_finding_detail(
         "",
     )
 
+    # IMPORTANT:
+    # Keep this as a real st.title so AppTest can find it through
+    # at.title and tests can verify that the selected finding opened.
+
     st.title(
         f"{SEVERITY_COLOR.get(severity, '')} "
         f"{finding['finding_id']}"
     )
 
-    tab_overview, tab_evidence, tab_review, tab_ai = st.tabs(
-        [
-            "Overview",
-            "Evidence & Policy",
-            "Review Info",
-            "AI Output",
-        ]
+    tab_overview, tab_evidence, tab_review, tab_ai = (
+        st.tabs(
+            [
+                "Overview",
+                "Evidence & Policy",
+                "Review Info",
+                "AI Output",
+            ]
+        )
     )
 
     # =====================================================
@@ -798,7 +1091,8 @@ def render_finding_detail(
             "Customer",
             finding.get(
                 "customer_id"
-            ) or "—",
+            )
+            or "—",
         )
 
         info_cols[2].metric(
@@ -828,9 +1122,11 @@ def render_finding_detail(
         exp_col, act_col = st.columns(2)
 
         with exp_col:
+
             st.markdown(
                 "**Expected**"
             )
+
             st.info(
                 finding.get(
                     "expected",
@@ -839,9 +1135,11 @@ def render_finding_detail(
             )
 
         with act_col:
+
             st.markdown(
                 "**Actual**"
             )
+
             st.warning(
                 finding.get(
                     "actual",
@@ -849,9 +1147,9 @@ def render_finding_detail(
                 )
             )
 
-        # -----------------------------------------------
-        # Other findings for same customer
-        # -----------------------------------------------
+        # -------------------------------------------------
+        # OTHER FINDINGS FOR SAME CUSTOMER
+        # -------------------------------------------------
 
         customer_id = finding.get(
             "customer_id"
@@ -863,10 +1161,16 @@ def render_finding_detail(
                 other
                 for other in findings
                 if (
-                    other.get("customer_id")
+                    other.get(
+                        "customer_id"
+                    )
                     == customer_id
-                    and other["finding_id"]
-                    != finding["finding_id"]
+                    and other.get(
+                        "finding_id"
+                    )
+                    != finding.get(
+                        "finding_id"
+                    )
                 )
             ]
 
@@ -880,9 +1184,11 @@ def render_finding_detail(
 
                 for sibling in siblings:
 
-                    sibling_severity = sibling.get(
-                        "severity",
-                        "",
+                    sibling_severity = (
+                        sibling.get(
+                            "severity",
+                            "",
+                        )
                     )
 
                     label = (
@@ -894,11 +1200,22 @@ def render_finding_detail(
 
                     if st.button(
                         label,
-                        key=f"jump_{sibling['finding_id']}",
+                        key=(
+                            f"jump_"
+                            f"{sibling['finding_id']}"
+                        ),
                     ):
+
                         st.session_state.selected_finding_id = (
-                            sibling["finding_id"]
+                            sibling[
+                                "finding_id"
+                            ]
                         )
+
+                        st.session_state.view = (
+                            "detail"
+                        )
+
                         st.rerun()
 
     # =====================================================
@@ -920,20 +1237,28 @@ def render_finding_detail(
             show_raw = st.toggle(
                 "Show raw JSON",
                 value=False,
-                key=f"evidence_raw_{finding['finding_id']}",
+                key=(
+                    f"evidence_raw_"
+                    f"{finding['finding_id']}"
+                ),
             )
 
             if show_raw:
+
                 st.json(
                     evidence
                 )
+
             else:
+
                 for key, value in evidence.items():
+
                     st.markdown(
                         f"**{key}:** {value}"
                     )
 
         else:
+
             st.caption(
                 "No evidence recorded for this finding."
             )
@@ -970,6 +1295,7 @@ def render_finding_detail(
                 st.divider()
 
         else:
+
             st.caption(
                 "No policy references recorded "
                 "for this finding."
@@ -992,8 +1318,7 @@ def render_finding_detail(
             )
 
             reviewer_name = (
-                st.session_state
-                .get(
+                st.session_state.get(
                     "reviewer_name",
                     "",
                 )
@@ -1017,7 +1342,9 @@ def render_finding_detail(
                 key=notes_key,
             )
 
-            confirm_col, reject_col = st.columns(2)
+            confirm_col, reject_col = (
+                st.columns(2)
+            )
 
             with confirm_col:
 
@@ -1025,17 +1352,25 @@ def render_finding_detail(
                     "✅ Confirm finding",
                     disabled=not reviewer_name,
                     width="stretch",
-                    key=f"confirm_{finding['finding_id']}",
+                    key=(
+                        f"confirm_"
+                        f"{finding['finding_id']}"
+                    ),
                 ):
 
                     try:
 
-                        updated = update_finding(
-                            finding["finding_id"],
+                        updated = _get_api_function(
+                            "update_finding"
+                        )(
+                            finding[
+                                "finding_id"
+                            ],
                             finding_status="CONFIRMED",
                             reviewed_by=reviewer_name,
                             reviewer_notes=(
-                                reviewer_notes or None
+                                reviewer_notes
+                                or None
                             ),
                         )
 
@@ -1047,25 +1382,15 @@ def render_finding_detail(
 
                     else:
 
-                        # Keep the cached findings list in sync with
-                        # what the backend actually persisted -- only
-                        # merge the review-related fields, not the raw
-                        # Supabase row (which carries created_at/
-                        # updated_at that break the AI input schema).
                         finding.update(
                             {
                                 key: value
-                                for key, value in updated.items()
-                                if key in REVIEW_MERGE_FIELDS
+                                for key, value
+                                in updated.items()
+                                if key
+                                in REVIEW_MERGE_FIELDS
                             }
                         )
-
-                        # The deterministic Stage 2 explanation is now
-                        # generated and persisted automatically by the
-                        # backend (see update_finding() in
-                        # backend/main.py) the moment finding_status
-                        # transitions to CONFIRMED -- nothing to do
-                        # here anymore.
 
                         st.success(
                             "Finding confirmed."
@@ -1079,17 +1404,25 @@ def render_finding_detail(
                     "❌ Reject finding",
                     disabled=not reviewer_name,
                     width="stretch",
-                    key=f"reject_{finding['finding_id']}",
+                    key=(
+                        f"reject_"
+                        f"{finding['finding_id']}"
+                    ),
                 ):
 
                     try:
 
-                        updated = update_finding(
-                            finding["finding_id"],
+                        updated = _get_api_function(
+                            "update_finding"
+                        )(
+                            finding[
+                                "finding_id"
+                            ],
                             finding_status="REJECTED",
                             reviewed_by=reviewer_name,
                             reviewer_notes=(
-                                reviewer_notes or None
+                                reviewer_notes
+                                or None
                             ),
                         )
 
@@ -1104,8 +1437,10 @@ def render_finding_detail(
                         finding.update(
                             {
                                 key: value
-                                for key, value in updated.items()
-                                if key in REVIEW_MERGE_FIELDS
+                                for key, value
+                                in updated.items()
+                                if key
+                                in REVIEW_MERGE_FIELDS
                             }
                         )
 
@@ -1127,7 +1462,9 @@ def render_finding_detail(
 
             st.divider()
 
-        rev_col1, rev_col2 = st.columns(2)
+        rev_col1, rev_col2 = (
+            st.columns(2)
+        )
 
         with rev_col1:
 
@@ -1160,9 +1497,6 @@ def render_finding_detail(
     # =====================================================
     # AI OUTPUT
     # =====================================================
-    # Generation now goes through POST /findings/{id}/ai-explanation
-    # instead of calling engine.ai_explanation_pipeline directly --
-    # see frontend.api_client.generate_ai_explanation().
 
     with tab_ai:
 
@@ -1199,7 +1533,12 @@ def render_finding_detail(
                     ai_recommendation
                 )
 
-        elif finding.get("finding_status") == "CONFIRMED":
+        elif (
+            finding.get(
+                "finding_status"
+            )
+            == "CONFIRMED"
+        ):
 
             st.caption(
                 "Not yet generated for this finding."
@@ -1208,7 +1547,10 @@ def render_finding_detail(
             if st.button(
                 "🤖 Generate AI explanation",
                 width="stretch",
-                key=f"generate_ai_{finding['finding_id']}",
+                key=(
+                    f"generate_ai_"
+                    f"{finding['finding_id']}"
+                ),
             ):
 
                 with st.spinner(
@@ -1216,29 +1558,57 @@ def render_finding_detail(
                 ):
 
                     try:
-                        data = generate_ai_explanation(
-                            finding["finding_id"]
+
+                        data = _get_api_function(
+                            "generate_ai_explanation"
+                        )(
+                            finding[
+                                "finding_id"
+                            ]
                         )
 
                     except BackendError as exc:
 
                         st.error(
-                            f"Could not generate an AI explanation: "
-                            f"{exc}"
+                            "Could not generate an "
+                            f"AI explanation: {exc}"
+                        )
+
+                    except Exception as exc:
+
+                        st.error(
+                            "Could not generate an "
+                            f"AI explanation: {exc}"
                         )
 
                     else:
 
-                        finding.update(
-                            {
-                                key: data[key]
-                                for key in (
-                                    "ai_explanation",
-                                    "ai_recommendation",
-                                )
-                                if key in data
-                            }
-                        )
+                        if isinstance(
+                            data,
+                            dict,
+                        ):
+
+                            if (
+                                "ai_explanation"
+                                in data
+                            ):
+
+                                finding[
+                                    "ai_explanation"
+                                ] = data[
+                                    "ai_explanation"
+                                ]
+
+                            if (
+                                "ai_recommendation"
+                                in data
+                            ):
+
+                                finding[
+                                    "ai_recommendation"
+                                ] = data[
+                                    "ai_recommendation"
+                                ]
 
                         st.success(
                             "AI explanation generated."
@@ -1266,17 +1636,14 @@ def _evaluation_value(
     default=0,
 ):
     """
-    Read a field from either a dataclass/object or dict.
-
-    Also handles evaluation=None gracefully (the case where the
-    backend hasn't persisted an evaluation row for this audit run
-    yet) by falling through to `default`.
+    Read a field from an object/dataclass or dictionary.
     """
 
     if hasattr(
         evaluation,
         field,
     ):
+
         return getattr(
             evaluation,
             field,
@@ -1286,6 +1653,7 @@ def _evaluation_value(
         evaluation,
         dict,
     ):
+
         return evaluation.get(
             field,
             default,
@@ -1298,13 +1666,14 @@ def _to_display_metric(
     value,
 ) -> str:
     """
-    Format numeric metric values for dashboard display.
+    Format numeric metric values.
     """
 
     if isinstance(
         value,
         float,
     ):
+
         return f"{value:.3f}"
 
     return str(value)
@@ -1319,26 +1688,23 @@ def render_dashboard(
     evaluation,
 ) -> None:
     """
-    Render Person C dashboard.
-
-    TP / FP / FN / Precision / Recall / F1 come from
-    GET /audit-runs/{id}/evaluation (see load_pipeline_result()).
-    If nothing has been persisted to audit_evaluations for the
-    current run yet, they show as placeholders (0 / 0.000).
-    Severity/status distribution and run summary are computed from
-    the real findings and are always live.
+    Render dashboard.
     """
 
-    render_page_header("Audit Dashboard", "📊")
+    render_page_header(
+        "Audit Dashboard",
+        "📊",
+    )
 
     st.caption(
         "Deterministic audit evaluation and finding summary"
     )
 
     if evaluation is None:
+
         st.caption(
-            "⚠️ No evaluation has been recorded for this audit run "
-            "yet — showing placeholders below."
+            "⚠️ No evaluation has been recorded for this "
+            "audit run yet — showing placeholders below."
         )
 
     # -----------------------------------------------------
@@ -1450,24 +1816,31 @@ def render_dashboard(
             severity_counts
             .rename("Findings")
             .to_frame()
+            .T
         )
-
-        # One column per severity level so each bar can carry its own
-        # on-brand color instead of the Streamlit-default near-black bars.
-        severity_chart_df = severity_chart_df.T
 
         st.bar_chart(
             severity_chart_df,
             width="stretch",
             color=[
-                SEVERITY_CHART_COLORS["CRITICAL"],
-                SEVERITY_CHART_COLORS["HIGH"],
-                SEVERITY_CHART_COLORS["MEDIUM"],
-                SEVERITY_CHART_COLORS["LOW"],
+                SEVERITY_CHART_COLORS[
+                    "CRITICAL"
+                ],
+                SEVERITY_CHART_COLORS[
+                    "HIGH"
+                ],
+                SEVERITY_CHART_COLORS[
+                    "MEDIUM"
+                ],
+                SEVERITY_CHART_COLORS[
+                    "LOW"
+                ],
             ],
         )
 
-        render_color_legend(SEVERITY_LEGEND)
+        render_color_legend(
+            SEVERITY_LEGEND
+        )
 
         severity_table = pd.DataFrame(
             {
@@ -1479,10 +1852,14 @@ def render_dashboard(
                 ],
                 "Count": [
                     int(
-                        severity_counts.iloc[index]
+                        severity_counts.iloc[
+                            index
+                        ]
                     )
                     for index in range(
-                        len(severity_counts)
+                        len(
+                            severity_counts
+                        )
                     )
                 ],
             }
@@ -1525,9 +1902,6 @@ def render_dashboard(
             .value_counts()
         )
 
-        # One column per status (instead of one shared column) so every
-        # bar can be given its own, consistent color regardless of the
-        # order value_counts() happens to return.
         status_chart_df = (
             status_counts
             .rename("Findings")
@@ -1540,7 +1914,8 @@ def render_dashboard(
                 status,
                 STATUS_CHART_FALLBACK_COLOR,
             )
-            for status in status_chart_df.columns
+            for status
+            in status_chart_df.columns
         ]
 
         st.bar_chart(
@@ -1549,22 +1924,29 @@ def render_dashboard(
             color=status_bar_colors,
         )
 
-        # Only show legend entries for statuses that are actually
-        # present in this audit run, so the legend never mentions a
-        # status the user can't currently see on the chart.
-        present_statuses = set(status_chart_df.columns)
+        present_statuses = set(
+            status_chart_df.columns
+        )
 
         status_legend_items = [
             item
             for item in STATUS_LEGEND
-            if item[0] in present_statuses
+            if item[0]
+            in present_statuses
         ]
 
-        other_statuses = present_statuses - {
-            item[0] for item in STATUS_LEGEND
-        }
+        other_statuses = (
+            present_statuses
+            - {
+                item[0]
+                for item in STATUS_LEGEND
+            }
+        )
 
-        for other_status in sorted(other_statuses):
+        for other_status in sorted(
+            other_statuses
+        ):
+
             status_legend_items.append(
                 (
                     other_status,
@@ -1573,7 +1955,9 @@ def render_dashboard(
                 )
             )
 
-        render_color_legend(status_legend_items)
+        render_color_legend(
+            status_legend_items
+        )
 
     else:
 
@@ -1620,7 +2004,8 @@ def render_dashboard(
                 for finding in findings
                 if finding.get(
                     "customer_id"
-                ) is not None
+                )
+                is not None
             }
         ),
     )
@@ -1650,7 +2035,10 @@ def render_dashboard(
 
             rows = []
 
-            for control_id, result in per_control.items():
+            for (
+                control_id,
+                result,
+            ) in per_control.items():
 
                 if hasattr(
                     result,
@@ -1759,52 +2147,67 @@ def render_dashboard(
                     hide_index=True,
                 )
 
+
 # =========================================================
 # MAIN
 # =========================================================
 
 def main() -> None:
-    """Run the Streamlit application."""
+    """
+    Run the Streamlit application.
+    """
 
-    # -----------------------------------------------------
+    # =====================================================
     # SESSION STATE
-    # -----------------------------------------------------
+    # =====================================================
 
     if "view" not in st.session_state:
+
         st.session_state.view = "dashboard"
 
     if "selected_finding_id" not in st.session_state:
+
         st.session_state.selected_finding_id = None
 
     if "filtered_ids" not in st.session_state:
+
         st.session_state.filtered_ids = None
 
-    # -----------------------------------------------------
-    # LOAD PIPELINE RESULT ONCE
-    # -----------------------------------------------------
-    # FIX: load_pipeline_result() is wrapped in @st.cache_resource and
-    # now requires an idempotency_key argument (see run_audit()). It
-    # must be called with the stable per-session key from
-    # _get_page_load_idempotency_key() -- calling it with no
-    # arguments (as before) raises a TypeError from inside the cache
-    # wrapper on every rerun.
+    # =====================================================
+    # LOAD PIPELINE RESULT
+    # =====================================================
 
     idempotency_key = _get_page_load_idempotency_key()
-    result = load_pipeline_result(idempotency_key)
+
+    result = load_pipeline_result(
+        idempotency_key
+    )
 
     findings = result.generated_findings
+
     evaluation = result.evaluation
 
-    # -----------------------------------------------------
+    # =====================================================
     # SIDEBAR
-    # -----------------------------------------------------
+    # =====================================================
 
-    reviewer_name = render_reviewer_identity()
+    render_reviewer_identity()
 
     st.sidebar.divider()
 
     st.sidebar.header(
         "Navigation"
+    )
+
+    # IMPORTANT:
+    # Detail view belongs to the Findings section.
+    # When a finding is already selected, preserve the detail view.
+    # The navigation radio only changes the top-level section.
+
+    navigation_index = (
+        0
+        if st.session_state.view == "dashboard"
+        else 1
     )
 
     selected_view = st.sidebar.radio(
@@ -1813,21 +2216,42 @@ def main() -> None:
             "Dashboard",
             "Findings",
         ],
-        index=(
-            0
-            if st.session_state.view == "dashboard"
-            else 1
-        ),
+        index=navigation_index,
+        key="navigation_view",
     )
 
-    if selected_view == "Dashboard":
-        st.session_state.view = "dashboard"
+    # -----------------------------------------------------
+    # HANDLE TOP-LEVEL NAVIGATION
+    # -----------------------------------------------------
 
-    else:
+    if selected_view == "Dashboard":
+
+        # Do not destroy an explicitly selected detail view.
         if (
-            st.session_state.view
-            == "dashboard"
+            st.session_state.view != "detail"
+            or not st.session_state.get(
+                "selected_finding_id"
+            )
         ):
+
+            st.session_state.view = "dashboard"
+
+            st.session_state.selected_finding_id = None
+
+    elif selected_view == "Findings":
+
+        # Preserve detail view if a finding is selected.
+        if (
+            st.session_state.view == "detail"
+            and st.session_state.get(
+                "selected_finding_id"
+            )
+        ):
+
+            st.session_state.view = "detail"
+
+        else:
+
             st.session_state.view = "list"
 
     st.sidebar.divider()
@@ -1836,18 +2260,37 @@ def main() -> None:
         "Findings, confirm/reject actions, and AI explanation "
         "generation all go through the FastAPI backend."
     )
+
     st.sidebar.divider()
-    if st.sidebar.button("🔄 Re-run audit"):
-        # Rotate the idempotency key so run_audit() is treated as a
-        # brand-new run, then clear the cache so load_pipeline_result()
-        # actually re-executes instead of returning the old cached
-        # SimpleNamespace for the old key.
+
+    # =====================================================
+    # RE-RUN AUDIT
+    # =====================================================
+
+    if st.sidebar.button(
+        "🔄 Re-run audit"
+    ):
+
         load_pipeline_result.clear()
-        st.session_state.page_load_idempotency_key = f"page-load-{uuid.uuid4().hex}"
+
+        st.session_state.page_load_idempotency_key = (
+            f"page-load-{uuid.uuid4().hex}"
+        )
+
+        st.session_state.view = "dashboard"
+
+        st.session_state.selected_finding_id = None
+
+        st.session_state.filtered_ids = None
+
         st.rerun()
 
-    # -----------------------------------------------------
+    # =====================================================
     # PAGE ROUTING
+    # =====================================================
+
+    # -----------------------------------------------------
+    # DASHBOARD
     # -----------------------------------------------------
 
     if st.session_state.view == "dashboard":
@@ -1860,31 +2303,39 @@ def main() -> None:
         return
 
     # -----------------------------------------------------
-    # FINDINGS DETAIL
+    # FINDING DETAIL
     # -----------------------------------------------------
+
+    selected_finding_id = (
+        st.session_state.get(
+            "selected_finding_id"
+        )
+    )
 
     if (
         st.session_state.view == "detail"
-        and st.session_state.selected_finding_id
+        and selected_finding_id
     ):
 
         finding = get_finding_by_id(
             findings,
-            st.session_state.selected_finding_id,
+            selected_finding_id,
         )
 
         if finding is None:
 
             st.session_state.view = "list"
+
             st.session_state.selected_finding_id = None
+
             st.rerun()
 
-        else:
+            return
 
-            render_finding_detail(
-                findings,
-                finding,
-            )
+        render_finding_detail(
+            findings,
+            finding,
+        )
 
         return
 
@@ -1892,10 +2343,16 @@ def main() -> None:
     # FINDINGS LIST
     # -----------------------------------------------------
 
+    st.session_state.view = "list"
+
     render_findings_list(
         findings
     )
 
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 if __name__ == "__main__":
     main()

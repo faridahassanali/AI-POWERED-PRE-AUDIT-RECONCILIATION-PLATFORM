@@ -107,6 +107,10 @@ from engine.audit_output import (
     build_audit_output,
 )
 
+from engine.pre_audit_report import (
+    generate_pre_audit_report,
+)
+
 
 @dataclass
 class AuditPipelineResult:
@@ -129,6 +133,13 @@ class AuditPipelineResult:
     audit_trace: Any
 
     audit_output: AuditOutput
+
+    # The full README Phase 7 report (audit summary, overall risk,
+    # control/severity/review statistics, and every finding with its
+    # evidence, policy references, and AI explanation if available).
+    # Built directly from audit_output, so it reflects exactly what
+    # audit_output contains -- including the FAILED case below.
+    pre_audit_report: str
 
 
 def _normalize_tables(
@@ -225,31 +236,9 @@ def _validate_findings_share_audit_run_id(
             )
 
 
-def _create_audit_trace(
-    audit_run_id: str,
-    unified: pd.DataFrame,
-):
-    """
-    Create the initial audit trace.
-    """
-
-    controls_executed = [
-        "SCREENING_001",
-        "RISK_001",
-        "ARABIC_NAME_001",
-        "DORMANT_001",
-        "RECON_001",
-    ]
-
-    return create_audit_trace(
-        audit_run_id=audit_run_id,
-        controls_executed=controls_executed,
-        total_records_evaluated=len(unified),
-    )
-
-
 def run_audit(
     data_dir: Path | str | None = None,
+    audit_run_id: str | None = None,
 ) -> AuditPipelineResult:
     """
     Run Stage 1 of the audit pipeline.
@@ -266,6 +255,7 @@ def run_audit(
     8. Evaluates against ground truth.
     9. Generates the evaluation report.
     10. Builds the canonical audit output.
+    11. Builds the final, exportable pre-audit report.
 
     IMPORTANT
     ---------
@@ -276,247 +266,7 @@ def run_audit(
 
     Human review must happen before the
     explanation/AI stage.
-    """
 
-    # =========================================================
-    # 1. CREATE AUDIT RUN ID
-    # =========================================================
-
-    if audit_run_id is None:
-       audit_run_id = f"AUDIT-{uuid4().hex}"
-
-    # =========================================================
-    # 2. LOAD DATA
-    # =========================================================
-
-    if data_dir is None:
-
-        tables = load_data()
-
-    else:
-
-        tables = load_data(
-            Path(data_dir)
-        )
-
-    # =========================================================
-    # 3. NORMALIZATION
-    # =========================================================
-
-    normalized_tables = _normalize_tables(
-        tables
-    )
-
-    # =========================================================
-    # 4. BUILD UNIFIED CUSTOMER RECORD
-    # =========================================================
-
-    unified = build_unified_customer_record(
-        normalized_tables
-    )
-
-    # =========================================================
-    # 5. CREATE AUDIT TRACE
-    # =========================================================
-
-    audit_trace = _create_audit_trace(
-        audit_run_id=audit_run_id,
-        unified=unified,
-    )
-
-    # =========================================================
-    # 6. RUN DETERMINISTIC CONTROLS
-    # =========================================================
-
-    # FIX: pass the run's own audit_run_id straight into the
-    # controls layer, instead of letting each control/build_finding
-    # call invent its own id and patching it after the fact (see
-    # _validate_findings_share_audit_run_id below).
-    generated_findings = run_all_controls(
-        unified=unified,
-        tables=normalized_tables,
-        audit_run_id=audit_run_id,
-    )
-
-    # =========================================================
-    # 7. VERIFY AUDIT RUN ID INTEGRITY
-    # =========================================================
-
-    # FIX: this step used to unconditionally overwrite
-    # finding["audit_run_id"] for every finding here. That silently
-    # masked controls that weren't given the run's audit_run_id in
-    # the first place. Now that engine.controls requires and threads
-    # audit_run_id explicitly, this step only verifies the contract
-    # held -- it raises loudly instead of patching quietly.
-    _validate_findings_share_audit_run_id(
-        generated_findings,
-        audit_run_id,
-    )
-
-    # =========================================================
-    # 8. FINDING VALIDATION
-    # =========================================================
-
-    _validate_generated_findings(
-        generated_findings
-    )
-
-    # =========================================================
-    # 9. FINDING INTEGRITY
-    # =========================================================
-
-    # FIX (bug): this used to call validate_unique_findings(), which
-    # returns a bool that was never checked -- duplicate findings
-    # could pass straight through the pipeline with no error and no
-    # warning. validate_unique_findings_or_raise() raises
-    # FindingIntegrityError instead, so it cannot be silently ignored
-    # the way a discarded return value could.
-    validate_unique_findings_or_raise(
-        generated_findings
-    )
-
-    # =========================================================
-    # 10. COMPLETE AUDIT TRACE
-    # =========================================================
-
-    audit_trace = complete_audit_trace(
-        trace=audit_trace,
-        total_findings_generated=len(
-            generated_findings
-        ),
-    )
-
-    # =========================================================
-    # 11. LOAD EXPECTED FINDINGS / GROUND TRUTH
-    # =========================================================
-
-    expected_findings = normalized_tables[
-        "expected_findings"
-    ].to_dict(
-        orient="records"
-    )
-
-    # =========================================================
-    # 12. GROUND TRUTH EVALUATION
-    # =========================================================
-
-    evaluation = evaluate_findings(
-        generated_findings=generated_findings,
-        expected_findings=expected_findings,
-    )
-
-    # =========================================================
-    # 13. EVALUATION REPORT
-    # =========================================================
-
-    report = generate_evaluation_report(
-        evaluation
-    )
-
-    # =========================================================
-    # 14. PRE-AI EXPLANATIONS
-    # =========================================================
-
-    # All generated findings are still in REVIEW status.
-    # Therefore, NO explanations are generated here.
-
-    explanations: list[dict[str, Any]] = []
-
-    # =========================================================
-    # 15. BUILD AUDIT OUTPUT
-    # =========================================================
-
-    audit_output = build_audit_output(
-        audit_trace=audit_trace,
-        findings=generated_findings,
-        explanations=explanations,
-        evaluation=evaluation,
-        report=report,
-    )
-
-    # =========================================================
-    # 16. RETURN PRE-AI RESULT
-    # =========================================================
-
-    return AuditPipelineResult(
-        generated_findings=generated_findings,
-        expected_findings=expected_findings,
-        evaluation=evaluation,
-        report=report,
-        explanations=explanations,
-        audit_trace=audit_trace,
-        audit_output=audit_output,
-    )
-
-
-def explain_confirmed_findings(
-    findings: list[dict[str, Any]],
-    registry: PolicyRegistry | None = None,
-    data_dir: Path | str | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Stage 2 of the audit pipeline.
-
-    Generate explanations ONLY for findings that have
-    passed human review and are CONFIRMED.
-
-    For each finding, this:
-
-    1. Resolves policy_context via RAG.retriever.retrieve_for_finding(),
-       which grounds strictly to the finding's own policy_references
-       (see RAG/retriever.py) -- it never substitutes a different,
-       merely-similar policy.
-    2. Builds the AI Input Contract via build_ai_input(), which
-       enforces the confirmed-only gate AND requires a non-empty,
-       resolved policy_context (see engine/ai_input.py).
-    3. Runs the deterministic explainer.
-
-    A registry can be passed in (e.g. one already loaded once by the
-    caller); otherwise one is loaded fresh from data_dir (defaults to
-    the project's data/ directory, same convention as run_audit()).
-
-    If a finding's policy reference doesn't resolve in the registry,
-    or resolves to nothing, that finding is BLOCKED (raises) rather
-    than silently explained with no policy grounding -- this must
-    never be caught and skipped silently, since a finding reaching
-    this stage is expected to already have a valid, registry-backed
-    policy reference from Stage 1.
-    """
-
-    if registry is None:
-        registry = load_policy_registry(
-            Path(data_dir) if data_dir is not None else DATA_DIR
-        )
-
-    explanations: list[dict[str, Any]] = []
-
-    for finding in findings:
-
-        policy_context = retrieve_for_finding(
-            finding=finding,
-            registry=registry,
-        )
-
-        ai_input = build_ai_input(
-            finding,
-            policy_context=policy_context,
-        )
-
-        explanation = explain_finding(
-            ai_input
-        )
-
-        explanations.append(
-            explanation
-        )
-
-    return explanations
-def run_audit(
-    data_dir: Path | str | None = None,
-    audit_run_id: str | None = None,
-) -> AuditPipelineResult:
-    """
-    ...
     This function always returns an AuditPipelineResult, even on
     failure -- including failures during data loading itself.
     Callers must check `result.audit_trace.status`.
@@ -531,18 +281,18 @@ def run_audit(
     # endpoint claims the idempotency key using a specific
     # audit_run_id before executing the pipeline.
     if audit_run_id is None:
-       audit_run_id = f"AUDIT-{uuid4().hex}"
+        audit_run_id = f"AUDIT-{uuid4().hex}"
 
     audit_trace = create_audit_trace(
-    audit_run_id=audit_run_id,
-    controls_executed=[
-        "SCREENING_001",
-        "RISK_001",
-        "ARABIC_NAME_001",
-        "DORMANT_001",
-        "RECON_001",
-    ],
-    total_records_evaluated=0,
+        audit_run_id=audit_run_id,
+        controls_executed=[
+            "SCREENING_001",
+            "RISK_001",
+            "ARABIC_NAME_001",
+            "DORMANT_001",
+            "RECON_001",
+        ],
+        total_records_evaluated=0,
     )
 
     try:
@@ -615,6 +365,7 @@ def run_audit(
             explanations=[],
             audit_trace=audit_trace,
             audit_output=audit_output,
+            pre_audit_report=generate_pre_audit_report(audit_output),
         )
 
     # =========================================================
@@ -679,4 +430,69 @@ def run_audit(
         explanations=explanations,
         audit_trace=audit_trace,
         audit_output=audit_output,
+        pre_audit_report=generate_pre_audit_report(audit_output),
     )
+
+
+def explain_confirmed_findings(
+    findings: list[dict[str, Any]],
+    registry: PolicyRegistry | None = None,
+    data_dir: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Stage 2 of the audit pipeline.
+
+    Generate explanations ONLY for findings that have
+    passed human review and are CONFIRMED.
+
+    For each finding, this:
+
+    1. Resolves policy_context via RAG.retriever.retrieve_for_finding(),
+       which grounds strictly to the finding's own policy_references
+       (see RAG/retriever.py) -- it never substitutes a different,
+       merely-similar policy.
+    2. Builds the AI Input Contract via build_ai_input(), which
+       enforces the confirmed-only gate AND requires a non-empty,
+       resolved policy_context (see engine/ai_input.py).
+    3. Runs the deterministic explainer.
+
+    A registry can be passed in (e.g. one already loaded once by the
+    caller); otherwise one is loaded fresh from data_dir (defaults to
+    the project's data/ directory, same convention as run_audit()).
+
+    If a finding's policy reference doesn't resolve in the registry,
+    or resolves to nothing, that finding is BLOCKED (raises) rather
+    than silently explained with no policy grounding -- this must
+    never be caught and skipped silently, since a finding reaching
+    this stage is expected to already have a valid, registry-backed
+    policy reference from Stage 1.
+    """
+
+    if registry is None:
+        registry = load_policy_registry(
+            Path(data_dir) if data_dir is not None else DATA_DIR
+        )
+
+    explanations: list[dict[str, Any]] = []
+
+    for finding in findings:
+
+        policy_context = retrieve_for_finding(
+            finding=finding,
+            registry=registry,
+        )
+
+        ai_input = build_ai_input(
+            finding,
+            policy_context=policy_context,
+        )
+
+        explanation = explain_finding(
+            ai_input
+        )
+
+        explanations.append(
+            explanation
+        )
+
+    return explanations
