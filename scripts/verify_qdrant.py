@@ -1,44 +1,82 @@
 """
 Qdrant Preflight Verification.
 
-Mirrors scripts/verify_database.py's pattern for the vector store:
-catch a misconfigured/unindexed Qdrant loudly, before RAG semantic
-fallback silently degrades to lexical search (see
-RAG.retriever._try_semantic_fallback, which swallows every Qdrant
-error and returns [] -- great for runtime resilience, terrible for
-noticing a real misconfiguration during development/deploy).
+Standalone check run BEFORE relying on RAG retrieval, to catch a
+missing/unreachable Qdrant server or an un-indexed collection loudly
+instead of failing mysteriously later (e.g. retrieve_for_finding()
+silently falling back to lexical search with no explanation of why
+semantic retrieval never kicked in).
+
+Mirrors scripts/verify_database.py's structure and philosophy:
+one script, several named checks, a clear PASS/FAIL report, exit
+code 0 only if everything passes.
 
 Checks, in order:
-    1. Reachable       -- is a Qdrant server listening at all?
-    2. Collection       -- does policy_chunks exist?
-    3. Point count > 0  -- has anything actually been indexed?
-    4. Point count matches the number of chunked policy sections
-       (RAG.chunker.chunk_all_policies()) -- catches a stale/partial
-       index (e.g. policies edited after the last index run).
+    1. Connection        -- can we reach the Qdrant server at all?
+    2. Collection exists  -- does "policy_chunks" exist?
+    3. Vector config       -- is the configured vector size/distance
+                              what RAG/vector_store.py expects (384,
+                              cosine)?
+    4. Indexed points       -- does the collection actually contain
+                              points (i.e. has index_chunks() been
+                              run), not just an empty shell?
+    5. Point count sanity    -- does the point count roughly match
+                              the number of chunks chunk_all_policies()
+                              produces, so a partial/stale index is
+                              visible rather than silently accepted?
+    6. Embedding model loads   -- can the configured sentence-transformers
+                              model actually be loaded (catches a
+                              missing/corrupted local model cache
+                              before the first real query hits it)?
+    7. Round-trip retrieval     -- does a real query against the
+                              dormant-accounts policy return the
+                              dormant-accounts policy as the top hit?
+                              (Same sanity check RAG/vector_store.py's
+                              own __main__ block does manually.)
 
 Usage
 -----
-    docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-    python -m RAG.vector_store        # index once
     python scripts/verify_qdrant.py
 
-Exit code is 0 only if every check passes.
+    # or point at a non-default host/port:
+    QDRANT_HOST=localhost QDRANT_PORT=6333 python scripts/verify_qdrant.py
+
+Exit code is 0 only if every check passes. Non-zero otherwise, so
+this is safe to wire into CI / a pre-deploy step alongside
+verify_database.py.
 """
 
 from __future__ import annotations
 
-import socket
+import os
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from RAG.chunker import chunk_all_policies
-from RAG.vector_store import (
-    _COLLECTION_NAME,
-    _QDRANT_HOST,
-    _QDRANT_PORT,
-    get_client,
-)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
+
+# =====================================================================
+# EXPECTED CONFIG
+#
+# Kept in sync with RAG/vector_store.py and RAG/embedder.py. If either
+# changes (model, dimension, collection name), update this in the
+# SAME PR -- this script is only useful if it actually reflects them.
+# =====================================================================
+
+EXPECTED_COLLECTION_NAME = "policy_chunks"
+EXPECTED_VECTOR_SIZE = 384
+EXPECTED_DISTANCE = "Cosine"
+EXPECTED_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+
+QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
+
+
+# =====================================================================
+# RESULT TRACKING (same shape as scripts/verify_database.py)
+# =====================================================================
 
 @dataclass
 class CheckResult:
@@ -59,148 +97,275 @@ class Report:
         return all(r.passed for r in self.results)
 
     def render(self) -> str:
-        lines = ["=" * 64, "QDRANT PREFLIGHT VERIFICATION", "=" * 64]
+        lines = []
+        lines.append("=" * 64)
+        lines.append("QDRANT PREFLIGHT VERIFICATION")
+        lines.append(f"target: {QDRANT_HOST}:{QDRANT_PORT}")
+        lines.append("=" * 64)
+
         for result in self.results:
             status = "PASS" if result.passed else "FAIL"
             lines.append("")
             lines.append(f"[{status}] {result.name}")
             for detail in result.details:
                 lines.append(f"    - {detail}")
+
         lines.append("")
         lines.append("=" * 64)
         total = len(self.results)
         passed = sum(1 for r in self.results if r.passed)
         lines.append(f"RESULT: {passed}/{total} checks passed")
         lines.append("=" * 64)
+
         return "\n".join(lines)
 
 
-def _is_reachable(host: str = _QDRANT_HOST, port: int = _QDRANT_PORT) -> bool:
+# =====================================================================
+# CHECKS
+# =====================================================================
+
+def check_connection(report: Report):
+    """Returns the connected client, or None if unreachable."""
     try:
-        with socket.create_connection((host, port), timeout=2):
-            return True
-    except OSError:
+        from qdrant_client import QdrantClient
+    except ImportError:
+        report.add(
+            "Connection",
+            False,
+            ["qdrant-client is not installed. Run: pip install qdrant-client"],
+        )
+        return None
+
+    try:
+        client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=5)
+        # get_collections() is the cheapest real round-trip -- forces
+        # an actual request rather than just constructing the client.
+        client.get_collections()
+    except Exception as exc:
+        report.add(
+            "Connection",
+            False,
+            [
+                f"Could not connect to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}: {exc}",
+                "Start it with: docker run -p 6333:6333 -p 6334:6334 "
+                "-v $(pwd)/rag/.qdrant_storage:/qdrant/storage qdrant/qdrant",
+            ],
+        )
+        return None
+
+    report.add("Connection", True, [f"Connected to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}."])
+    return client
+
+
+def check_collection_exists(report: Report, client) -> bool:
+    try:
+        collections = [c.name for c in client.get_collections().collections]
+    except Exception as exc:
+        report.add("Collection Exists", False, [f"Could not list collections: {exc}"])
         return False
 
-
-def check_reachable() -> CheckResult:
-    if _is_reachable():
-        return CheckResult(
-            "Reachable",
-            True,
-            [f"Connected to Qdrant at {_QDRANT_HOST}:{_QDRANT_PORT}."],
-        )
-    return CheckResult(
-        "Reachable",
-        False,
-        [
-            f"Could not reach Qdrant at {_QDRANT_HOST}:{_QDRANT_PORT}.",
-            "Start it with: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant",
-        ],
-    )
-
-
-def check_collection_exists(client) -> CheckResult:
-    try:
-        existing = [c.name for c in client.get_collections().collections]
-    except Exception as exc:
-        return CheckResult("Collection", False, [f"Could not list collections: {exc}"])
-
-    if _COLLECTION_NAME in existing:
-        return CheckResult(
-            "Collection",
-            True,
-            [f"Collection '{_COLLECTION_NAME}' exists."],
-        )
-    return CheckResult(
-        "Collection",
-        False,
-        [
-            f"Collection '{_COLLECTION_NAME}' does not exist.",
-            "Run: python -m RAG.vector_store to index policies.",
-        ],
-    )
-
-
-def check_point_count_positive(client) -> tuple[CheckResult, int | None]:
-    try:
-        count_result = client.count(collection_name=_COLLECTION_NAME, exact=True)
-        point_count = count_result.count
-    except Exception as exc:
-        return CheckResult("Point Count > 0", False, [f"Could not count points: {exc}"]), None
-
-    if point_count > 0:
-        return (
-            CheckResult("Point Count > 0", True, [f"{point_count} point(s) indexed."]),
-            point_count,
-        )
-    return (
-        CheckResult(
-            "Point Count > 0",
+    if EXPECTED_COLLECTION_NAME not in collections:
+        report.add(
+            "Collection Exists",
             False,
-            ["Collection exists but contains zero points -- nothing has been indexed."],
-        ),
-        point_count,
-    )
-
-
-def check_point_count_matches_chunks(point_count: int | None) -> CheckResult:
-    if point_count is None:
-        return CheckResult(
-            "Point Count Matches Policy Chunks",
-            False,
-            ["Skipped -- point count could not be determined."],
+            [
+                f"Collection '{EXPECTED_COLLECTION_NAME}' not found. "
+                f"Existing collections: {collections or '(none)'}",
+                "Run RAG/vector_store.py's __main__ block (or index_chunks()) "
+                "to create and populate it.",
+            ],
         )
+        return False
+
+    report.add("Collection Exists", True, [f"Collection '{EXPECTED_COLLECTION_NAME}' exists."])
+    return True
+
+
+def check_vector_config(report: Report, client) -> None:
+    try:
+        info = client.get_collection(EXPECTED_COLLECTION_NAME)
+        vectors_config = info.config.params.vectors
+        size = vectors_config.size
+        distance = str(vectors_config.distance)
+    except Exception as exc:
+        report.add("Vector Config", False, [f"Could not read collection config: {exc}"])
+        return
+
+    problems = []
+
+    if size != EXPECTED_VECTOR_SIZE:
+        problems.append(
+            f"Vector size is {size}, expected {EXPECTED_VECTOR_SIZE} "
+            f"(the embedder model '{EXPECTED_MODEL_NAME}' output dimension). "
+            "This usually means the collection was created with a different "
+            "embedding model than the one currently configured."
+        )
+
+    if EXPECTED_DISTANCE.lower() not in distance.lower():
+        problems.append(f"Distance metric is {distance}, expected {EXPECTED_DISTANCE}.")
+
+    if problems:
+        report.add("Vector Config", False, problems)
+    else:
+        report.add(
+            "Vector Config",
+            True,
+            [f"size={size}, distance={distance} -- matches expected embedder output."],
+        )
+
+
+def check_indexed_points(report: Report, client) -> int:
+    try:
+        count_result = client.count(collection_name=EXPECTED_COLLECTION_NAME, exact=True)
+        count = count_result.count
+    except Exception as exc:
+        report.add("Indexed Points", False, [f"Could not count points: {exc}"])
+        return 0
+
+    if count == 0:
+        report.add(
+            "Indexed Points",
+            False,
+            [
+                "Collection exists but contains 0 points -- it has never been "
+                "indexed. Run: python -m RAG.vector_store (or call "
+                "index_chunks(embed_chunks(chunk_all_policies())) directly)."
+            ],
+        )
+        return 0
+
+    report.add("Indexed Points", True, [f"{count} point(s) indexed."])
+    return count
+
+
+def check_point_count_matches_corpus(report: Report, indexed_count: int) -> None:
+    if indexed_count == 0:
+        # Already reported as a failure by check_indexed_points; skip
+        # the comparison so we don't double-report the same root cause.
+        report.add("Point Count Sanity", False, ["Skipped -- no points indexed."])
+        return
 
     try:
-        chunks = chunk_all_policies()
+        from RAG.chunker import chunk_all_policies
+
+        expected_chunks = len(chunk_all_policies())
     except Exception as exc:
-        return CheckResult(
-            "Point Count Matches Policy Chunks",
+        report.add(
+            "Point Count Sanity",
             False,
-            [f"Could not chunk local policy files for comparison: {exc}"],
+            [f"Could not chunk the local policy corpus for comparison: {exc}"],
         )
+        return
 
-    expected_count = len(chunks)
-
-    if point_count == expected_count:
-        return CheckResult(
-            "Point Count Matches Policy Chunks",
-            True,
-            [f"{point_count} indexed points == {expected_count} chunked policy sections."],
+    if indexed_count != expected_chunks:
+        report.add(
+            "Point Count Sanity",
+            False,
+            [
+                f"Qdrant has {indexed_count} point(s), but the local policy "
+                f"corpus currently chunks into {expected_chunks}. The index is "
+                "stale -- re-run indexing after any policy .md file change "
+                "(index_chunks() upserts by policy_id+section, so a new "
+                "section/policy file requires a fresh index run)."
+            ],
         )
+        return
 
-    return CheckResult(
-        "Point Count Matches Policy Chunks",
-        False,
-        [
-            f"Indexed point count ({point_count}) does not match the current "
-            f"chunked policy sections ({expected_count}).",
-            "This usually means policies were edited/added after the last "
-            "index run -- re-run: python -m RAG.vector_store",
-        ],
+    report.add(
+        "Point Count Sanity",
+        True,
+        [f"Indexed point count ({indexed_count}) matches the local policy corpus."],
     )
 
+
+def check_embedding_model_loads(report: Report) -> bool:
+    try:
+        from RAG.embedder import get_model
+
+        model = get_model()
+        dim = model.get_sentence_embedding_dimension()
+    except Exception as exc:
+        report.add(
+            "Embedding Model Loads",
+            False,
+            [
+                f"Could not load '{EXPECTED_MODEL_NAME}': {exc}",
+                "First run downloads the model from HuggingFace -- make sure "
+                "network access is available, or the model is already cached.",
+            ],
+        )
+        return False
+
+    if dim != EXPECTED_VECTOR_SIZE:
+        report.add(
+            "Embedding Model Loads",
+            False,
+            [f"Model loaded but outputs dimension {dim}, expected {EXPECTED_VECTOR_SIZE}."],
+        )
+        return False
+
+    report.add("Embedding Model Loads", True, [f"'{EXPECTED_MODEL_NAME}' loaded, dim={dim}."])
+    return True
+
+
+def check_round_trip_retrieval(report: Report, model_ok: bool) -> None:
+    if not model_ok:
+        report.add("Round-Trip Retrieval", False, ["Skipped -- embedding model failed to load."])
+        return
+
+    try:
+        from RAG.vector_store import retrieve_policy_context
+
+        results = retrieve_policy_context("dormant account handling requirements", top_k=1)
+    except Exception as exc:
+        report.add("Round-Trip Retrieval", False, [f"Query failed: {exc}"])
+        return
+
+    if not results:
+        report.add("Round-Trip Retrieval", False, ["Query returned zero results."])
+        return
+
+    top_policy_id = results[0].get("policy_id")
+
+    if top_policy_id != "DORMANT-POLICY-001":
+        report.add(
+            "Round-Trip Retrieval",
+            False,
+            [
+                "Sanity query for 'dormant account handling requirements' "
+                f"returned '{top_policy_id}' as the top hit, expected "
+                "'DORMANT-POLICY-001'. The index may be stale or corrupted."
+            ],
+        )
+        return
+
+    report.add(
+        "Round-Trip Retrieval",
+        True,
+        [f"Sanity query correctly returned DORMANT-POLICY-001 (score={results[0].get('score'):.3f})."],
+    )
+
+
+# =====================================================================
+# MAIN
+# =====================================================================
 
 def run_all_checks() -> Report:
     report = Report()
 
-    reachable = check_reachable()
-    report.results.append(reachable)
-    if not reachable.passed:
+    client = check_connection(report)
+    if client is None:
         return report
 
-    client = get_client()
-
-    collection = check_collection_exists(client)
-    report.results.append(collection)
-    if not collection.passed:
+    collection_exists = check_collection_exists(report, client)
+    if not collection_exists:
         return report
 
-    count_check, point_count = check_point_count_positive(client)
-    report.results.append(count_check)
-
-    report.results.append(check_point_count_matches_chunks(point_count))
+    check_vector_config(report, client)
+    indexed_count = check_indexed_points(report, client)
+    check_point_count_matches_corpus(report, indexed_count)
+    model_ok = check_embedding_model_loads(report)
+    check_round_trip_retrieval(report, model_ok)
 
     return report
 
