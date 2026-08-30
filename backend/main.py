@@ -241,15 +241,6 @@ def execute_audit(
         )
 
         # -----------------------------------------------------
-        # TEMPORARY DEBUG
-        # -----------------------------------------------------
-        print("=== IDEMPOTENCY DEBUG ===")
-        print("KEY:", idempotency_key)
-        print("GENERATED AUDIT RUN ID:", audit_run_id)
-        print("CLAIM RESULT:", claim_result)
-        print("=========================")
-
-        # -----------------------------------------------------
         # 3. DUPLICATE REQUEST
         # -----------------------------------------------------
         if not claim_result["claimed"]:
@@ -312,6 +303,27 @@ def execute_audit(
         result = run_audit(
             audit_run_id=audit_run_id,
         )
+
+        # -----------------------------------------------------
+        # 4b. CHECK PIPELINE FAILURE
+        # -----------------------------------------------------
+        # FIX: run_audit() always returns a result, even when the
+        # pipeline itself failed (audit_trace.status == "FAILED"),
+        # instead of raising. Without this check, a failed run would
+        # be persisted and reported to the caller as "success" --
+        # the exact same class of bug fixed earlier in
+        # engine.audit_orchestration.run_audit_and_persist(), which
+        # this endpoint does not go through (it calls run_audit()
+        # directly), so it needed the same guard independently.
+        if result.audit_trace.status == "FAILED":
+            return {
+                "status": "error",
+                "message": "Audit pipeline failed.",
+                "audit_run_id": result.audit_trace.audit_run_id,
+                "error_type": result.audit_trace.error_type,
+                "error_message": result.audit_trace.error_message,
+                "pre_audit_report": result.pre_audit_report,
+            }
 
         # -----------------------------------------------------
         # 5. SAVE AUDIT RUN
@@ -388,6 +400,7 @@ def execute_audit(
                     result.evaluation.f1_score
                 ),
             },
+            "pre_audit_report": result.pre_audit_report,
         }
 
     except Exception as e:
