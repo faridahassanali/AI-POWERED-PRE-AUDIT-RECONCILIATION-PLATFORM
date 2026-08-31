@@ -15,6 +15,7 @@ jobs:
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      APP_API_KEYS: ${{ secrets.APP_API_KEYS }}
 
     steps:
       - name: Checkout repository
@@ -35,7 +36,8 @@ jobs:
         run: |
           test -n "$SUPABASE_URL" || (echo "SUPABASE_URL is missing" && exit 1)
           test -n "$SUPABASE_SERVICE_ROLE_KEY" || (echo "SUPABASE_SERVICE_ROLE_KEY is missing" && exit 1)
-          echo "Supabase environment variables are available."
+          test -n "$APP_API_KEYS" || (echo "APP_API_KEYS is missing" && exit 1)
+          echo "Required environment variables are available."
 
       - name: Run tests
         run: pytest -q
